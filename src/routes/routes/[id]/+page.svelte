@@ -1,17 +1,23 @@
 <script lang="ts">
+	import { enhance } from '$app/forms';
+	import { invalidateAll } from '$app/navigation';
 	import RouteMap from '$lib/components/RouteMap.svelte';
 	import ElevationChart from '$lib/components/ElevationChart.svelte';
 	import { computeCropStats, gradeColor } from '$lib/elevation.js';
 	import type { PageProps } from './$types.js';
 
-	let { data }: PageProps = $props();
+	let { data, form }: PageProps = $props();
 	const route = $derived(data.route);
+	const segments = $derived(data.segments);
 
 	let hoverDistM = $state<number | null>(null);
 	let markerA = $state<number | null>(null);
 	let markerB = $state<number | null>(null);
 
-	// Invariant: markerA is the start (smaller distance), markerB is the end.
+	let savingMode = $state(false);
+	let saveName = $state('');
+	let saving = $state(false);
+	let deletingId = $state<string | null>(null);
 
 	const crop = $derived.by(() => {
 		if (markerA == null || markerB == null) return null;
@@ -24,9 +30,13 @@
 		return computeCropStats(route.points, crop.startM, crop.endM, 500);
 	});
 
+	const saveError = $derived(
+		form && 'scope' in form && form.scope === 'save' && 'error' in form
+			? (form.error as string)
+			: null
+	);
+
 	function placeMarker(distM: number) {
-		// Directional placement: clicks "left of A" set/replace A, "right of B" set/replace B.
-		// Clicks inside the [A, B] range are ignored (user should drag to adjust).
 		if (markerA != null && markerB != null) {
 			if (distM < markerA) markerA = distM;
 			else if (distM > markerB) markerB = distM;
@@ -63,6 +73,21 @@
 	function resetMarkers() {
 		markerA = null;
 		markerB = null;
+	}
+
+	function applySegment(startDistM: number, endDistM: number) {
+		markerA = startDistM;
+		markerB = endDistM;
+	}
+
+	function openSave() {
+		saveName = '';
+		savingMode = true;
+	}
+
+	function cancelSave() {
+		savingMode = false;
+		saveName = '';
 	}
 
 	function fmtKm(m: number): string {
@@ -133,13 +158,24 @@
 					<h3 class="text-sm font-medium uppercase tracking-wide text-neutral-500">
 						Selection
 					</h3>
-					<button
-						type="button"
-						onclick={resetMarkers}
-						class="text-xs text-neutral-500 hover:text-neutral-900"
-					>
-						Reset
-					</button>
+					<div class="flex items-center gap-3">
+						<button
+							type="button"
+							onclick={resetMarkers}
+							class="text-xs text-neutral-500 hover:text-neutral-900"
+						>
+							Reset
+						</button>
+						{#if !savingMode}
+							<button
+								type="button"
+								onclick={openSave}
+								class="inline-flex items-center rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700"
+							>
+								Save segment
+							</button>
+						{/if}
+					</div>
 				</div>
 				<dl class="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
 					<div>
@@ -173,6 +209,62 @@
 						</dd>
 					</div>
 				</dl>
+
+				{#if savingMode}
+					<form
+						method="POST"
+						action="?/saveSegment"
+						use:enhance={() => {
+							saving = true;
+							return async ({ result, update }) => {
+								await update({ reset: false });
+								saving = false;
+								if (result.type === 'success') {
+									savingMode = false;
+									saveName = '';
+									await invalidateAll();
+								}
+							};
+						}}
+						class="mt-4 border-t border-neutral-200 pt-4"
+					>
+						<div class="flex items-center gap-2">
+							<!-- svelte-ignore a11y_autofocus -->
+							<input
+								name="name"
+								type="text"
+								required
+								autofocus
+								autocomplete="off"
+								bind:value={saveName}
+								placeholder="Segment name (e.g. Hohneck climb)"
+								class="flex-1 rounded-md border border-neutral-300 px-3 py-1.5 text-sm focus:border-neutral-900 focus:outline-none"
+							/>
+							<input type="hidden" name="startDistM" value={crop?.startM ?? ''} />
+							<input type="hidden" name="endDistM" value={crop?.endM ?? ''} />
+							<input type="hidden" name="binSizeM" value="500" />
+							<button
+								type="button"
+								onclick={cancelSave}
+								class="rounded-md px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-100"
+							>
+								Cancel
+							</button>
+							<button
+								type="submit"
+								disabled={saving || !crop}
+								class="rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-50"
+							>
+								{saving ? 'Saving…' : 'Save'}
+							</button>
+						</div>
+						{#if saveError}
+							<p class="mt-2 rounded bg-red-50 px-3 py-1.5 text-xs text-red-700">
+								{saveError}
+							</p>
+						{/if}
+					</form>
+				{/if}
 			</div>
 		{:else if markerA != null || markerB != null}
 			<div class="rounded-lg border border-dashed border-neutral-300 bg-neutral-50 px-4 py-3 text-sm text-neutral-600">
@@ -191,5 +283,55 @@
 				</button>
 			</div>
 		{/if}
+
+		<div class="rounded-lg border border-neutral-200 bg-white">
+			<h3 class="px-4 pt-4 pb-2 text-sm font-medium uppercase tracking-wide text-neutral-500">
+				Segments ({segments.length})
+			</h3>
+			{#if segments.length === 0}
+				<p class="px-4 pb-4 text-sm text-neutral-500">
+					No segments saved yet. Pick a crop with A and B, then hit “Save segment”.
+				</p>
+			{:else}
+				<ul class="divide-y divide-neutral-200">
+					{#each segments as seg (seg.id)}
+						<li class="flex items-center gap-3 px-4 py-3">
+							<button
+								type="button"
+								onclick={() => applySegment(seg.startDistM, seg.endDistM)}
+								class="flex-1 text-left"
+							>
+								<div class="text-sm font-medium">{seg.name}</div>
+								<div class="text-xs text-neutral-500">
+									<code>{seg.id}</code> · {fmtKm(seg.endDistM - seg.startDistM)} · {fmtKm(seg.startDistM)} → {fmtKm(seg.endDistM)}
+								</div>
+							</button>
+							<form
+								method="POST"
+								action="?/deleteSegment"
+								use:enhance={() => {
+									deletingId = seg.id;
+									return async ({ update }) => {
+										await update({ reset: false });
+										deletingId = null;
+									};
+								}}
+							>
+								<input type="hidden" name="segId" value={seg.id} />
+								<button
+									type="submit"
+									disabled={deletingId === seg.id}
+									class="text-xs text-neutral-500 hover:text-red-600 disabled:opacity-50"
+									aria-label="Delete segment {seg.name}"
+								>
+									Delete
+								</button>
+							</form>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		</div>
 	</section>
 </main>
+
