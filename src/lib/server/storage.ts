@@ -107,6 +107,6 @@ export async function listSegments(routeId: string): Promise<SegmentData[]> {
 			/* skip malformed */
 		}
 	}
-	segments.sort((a, b) => a.startDistM - b.startDistM);
+	segments.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 	return segments;
 }

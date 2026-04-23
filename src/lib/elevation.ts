@@ -80,10 +80,54 @@ export function bucketGradeAtDistance(
 export type CropStats = {
 	lengthM: number;
 	netGainM: number;
+	totalAscentM: number;
 	avgGrade: number;
 	maxGrade: number;
 	maxGradeBucket: { startM: number; endM: number } | null;
 };
+
+const ASCENT_SMOOTH_WINDOW_M = 50;
+
+function computeTotalAscent(
+	points: RoutePoint[],
+	startM: number,
+	endM: number,
+	windowM: number
+): number {
+	const idxs: number[] = [];
+	for (let i = 0; i < points.length; i++) {
+		const d = points[i].cumDistM;
+		if (d < startM) continue;
+		if (d > endM) break;
+		idxs.push(i);
+	}
+	if (idxs.length < 2) return 0;
+
+	const halfW = windowM / 2;
+	const smoothed: number[] = new Array(idxs.length);
+	for (let k = 0; k < idxs.length; k++) {
+		const i = idxs[k];
+		const center = points[i].cumDistM;
+		let sum = points[i].ele;
+		let count = 1;
+		for (let j = i - 1; j >= 0 && center - points[j].cumDistM <= halfW; j--) {
+			sum += points[j].ele;
+			count++;
+		}
+		for (let j = i + 1; j < points.length && points[j].cumDistM - center <= halfW; j++) {
+			sum += points[j].ele;
+			count++;
+		}
+		smoothed[k] = sum / count;
+	}
+
+	let ascent = 0;
+	for (let k = 1; k < smoothed.length; k++) {
+		const d = smoothed[k] - smoothed[k - 1];
+		if (d > 0) ascent += d;
+	}
+	return ascent;
+}
 
 export function computeCropStats(
 	points: RoutePoint[],
@@ -96,6 +140,12 @@ export function computeCropStats(
 	const lengthM = b.cumDistM - a.cumDistM;
 	const netGainM = b.ele - a.ele;
 	const avgGrade = lengthM > 0 ? (netGainM / lengthM) * 100 : 0;
+	const totalAscentM = computeTotalAscent(
+		points,
+		a.cumDistM,
+		b.cumDistM,
+		ASCENT_SMOOTH_WINDOW_M
+	);
 
 	let maxGrade = -Infinity;
 	let maxGradeBucket: { startM: number; endM: number } | null = null;
@@ -113,7 +163,7 @@ export function computeCropStats(
 	}
 	if (maxGrade === -Infinity) maxGrade = avgGrade;
 
-	return { lengthM, netGainM, avgGrade, maxGrade, maxGradeBucket };
+	return { lengthM, netGainM, totalAscentM, avgGrade, maxGrade, maxGradeBucket };
 }
 
 export function gradeColor(grade: number): string {

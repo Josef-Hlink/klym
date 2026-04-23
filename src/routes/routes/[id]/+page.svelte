@@ -30,6 +30,13 @@
 		return computeCropStats(route.points, crop.startM, crop.endM, 500);
 	});
 
+	const segmentsWithStats = $derived(
+		segments.map((seg) => ({
+			...seg,
+			stats: computeCropStats(route.points, seg.startDistM, seg.endDistM, seg.binSizeM)
+		}))
+	);
+
 	const saveError = $derived(
 		form && 'scope' in form && form.scope === 'save' && 'error' in form
 			? (form.error as string)
@@ -154,42 +161,38 @@
 
 		{#if cropStats}
 			<div class="rounded-lg border border-neutral-200 bg-white p-4">
-				<div class="mb-3 flex items-center justify-between">
-					<h3 class="text-sm font-medium uppercase tracking-wide text-neutral-500">
-						Selection
-					</h3>
-					<div class="flex items-center gap-3">
-						<button
-							type="button"
-							onclick={resetMarkers}
-							class="text-xs text-neutral-500 hover:text-neutral-900"
-						>
-							Reset
-						</button>
-						{#if !savingMode}
-							<button
-								type="button"
-								onclick={openSave}
-								class="inline-flex items-center rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700"
-							>
-								Save segment
-							</button>
-						{/if}
-					</div>
-				</div>
-				<dl class="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+				<h3 class="mb-3 text-sm font-medium uppercase tracking-wide text-neutral-500">
+					Selection
+				</h3>
+				<dl class="grid grid-cols-1 gap-x-4 gap-y-4 text-sm sm:grid-cols-3">
 					<div>
-						<dt class="text-xs uppercase tracking-wide text-neutral-500">Length</dt>
+						<dt class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-neutral-500">
+							{@render iconRoute()}
+							Length
+						</dt>
 						<dd class="mt-1 text-lg font-medium">{fmtKm(cropStats.lengthM)}</dd>
 					</div>
 					<div>
-						<dt class="text-xs uppercase tracking-wide text-neutral-500">Net gain</dt>
+						<dt class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-neutral-500">
+							{@render iconTrendingUp()}
+							Ascent
+						</dt>
+						<dd class="mt-1 text-lg font-medium">+{fmtM(cropStats.totalAscentM)}</dd>
+					</div>
+					<div>
+						<dt class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-neutral-500">
+							{@render iconPlusMinus()}
+							Net gain
+						</dt>
 						<dd class="mt-1 text-lg font-medium">
 							{cropStats.netGainM >= 0 ? '+' : ''}{fmtM(cropStats.netGainM)}
 						</dd>
 					</div>
 					<div>
-						<dt class="text-xs uppercase tracking-wide text-neutral-500">Avg grade</dt>
+						<dt class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-neutral-500">
+							{@render iconPercent()}
+							Avg grade
+						</dt>
 						<dd class="mt-1 flex items-center gap-2 text-lg font-medium">
 							<span
 								class="inline-block h-3 w-3 rounded"
@@ -199,7 +202,10 @@
 						</dd>
 					</div>
 					<div>
-						<dt class="text-xs uppercase tracking-wide text-neutral-500">Max 500m</dt>
+						<dt class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-neutral-500">
+							{@render iconFlame()}
+							Max 500m
+						</dt>
 						<dd class="mt-1 flex items-center gap-2 text-lg font-medium">
 							<span
 								class="inline-block h-3 w-3 rounded"
@@ -207,6 +213,26 @@
 							></span>
 							{cropStats.maxGrade.toFixed(1)}%
 						</dd>
+					</div>
+					<div class="flex items-end justify-end gap-2">
+						<button
+							type="button"
+							onclick={resetMarkers}
+							class="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-100"
+						>
+							{@render iconRotateCcw()}
+							Reset
+						</button>
+						{#if !savingMode}
+							<button
+								type="button"
+								onclick={openSave}
+								class="inline-flex items-center gap-1.5 rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700"
+							>
+								{@render iconSave()}
+								Save segment
+							</button>
+						{/if}
 					</div>
 				</dl>
 
@@ -294,8 +320,8 @@
 				</p>
 			{:else}
 				<ul class="divide-y divide-neutral-200">
-					{#each segments as seg (seg.id)}
-						<li class="flex items-center gap-3 px-4 py-3">
+					{#each segmentsWithStats as seg (seg.id)}
+						<li class="flex items-center gap-4 px-4 py-3">
 							<button
 								type="button"
 								onclick={() => applySegment(seg.startDistM, seg.endDistM)}
@@ -303,9 +329,29 @@
 							>
 								<div class="text-sm font-medium">{seg.name}</div>
 								<div class="text-xs text-neutral-500">
-									<code>{seg.id}</code> · {fmtKm(seg.endDistM - seg.startDistM)} · {fmtKm(seg.startDistM)} → {fmtKm(seg.endDistM)}
+									<code>{seg.id}</code> · {fmtKm(seg.startDistM)} → {fmtKm(seg.endDistM)}
 								</div>
 							</button>
+							<div class="flex items-center gap-5 text-sm tabular-nums">
+								<div class="text-right">
+									<div class="text-[10px] uppercase tracking-wide text-neutral-500">Length</div>
+									<div class="font-medium">{fmtKm(seg.stats.lengthM)}</div>
+								</div>
+								<div class="text-right">
+									<div class="text-[10px] uppercase tracking-wide text-neutral-500">Ascent</div>
+									<div class="font-medium">+{fmtM(seg.stats.totalAscentM)}</div>
+								</div>
+								<div class="text-right">
+									<div class="text-[10px] uppercase tracking-wide text-neutral-500">Avg</div>
+									<div class="flex items-center justify-end gap-1.5 font-medium">
+										<span
+											class="inline-block h-2.5 w-2.5 rounded"
+											style:background-color={gradeColor(seg.stats.avgGrade)}
+										></span>
+										{seg.stats.avgGrade.toFixed(1)}%
+									</div>
+								</div>
+							</div>
 							<form
 								method="POST"
 								action="?/deleteSegment"
@@ -334,4 +380,56 @@
 		</div>
 	</section>
 </main>
+
+{#snippet iconRoute()}
+	<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<circle cx="6" cy="19" r="3" />
+		<path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15" />
+		<circle cx="18" cy="5" r="3" />
+	</svg>
+{/snippet}
+
+{#snippet iconTrendingUp()}
+	<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
+		<polyline points="16 7 22 7 22 13" />
+	</svg>
+{/snippet}
+
+{#snippet iconPlusMinus()}
+	<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<line x1="8" y1="7" x2="16" y2="7" />
+		<line x1="12" y1="3" x2="12" y2="11" />
+		<line x1="8" y1="18" x2="16" y2="18" />
+	</svg>
+{/snippet}
+
+{#snippet iconPercent()}
+	<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<line x1="19" y1="5" x2="5" y2="19" />
+		<circle cx="6.5" cy="6.5" r="2.5" />
+		<circle cx="17.5" cy="17.5" r="2.5" />
+	</svg>
+{/snippet}
+
+{#snippet iconFlame()}
+	<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
+	</svg>
+{/snippet}
+
+{#snippet iconRotateCcw()}
+	<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+		<path d="M3 3v5h5" />
+	</svg>
+{/snippet}
+
+{#snippet iconSave()}
+	<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+		<polyline points="7 10 12 15 17 10" />
+		<line x1="12" y1="15" x2="12" y2="3" />
+	</svg>
+{/snippet}
 
