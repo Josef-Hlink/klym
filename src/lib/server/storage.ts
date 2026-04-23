@@ -72,6 +72,15 @@ export async function segmentExists(routeId: string, segId: string): Promise<boo
 	}
 }
 
+export async function readSegment(routeId: string, segId: string): Promise<SegmentData | null> {
+	try {
+		const text = await readFile(segmentFile(routeId, segId), 'utf8');
+		return JSON.parse(text) as SegmentData;
+	} catch {
+		return null;
+	}
+}
+
 export async function writeSegment(segment: SegmentData): Promise<void> {
 	await mkdir(segmentsDir(segment.routeId), { recursive: true });
 	await writeFile(

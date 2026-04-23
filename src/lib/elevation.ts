@@ -166,6 +166,39 @@ export function computeCropStats(
 	return { lengthM, netGainM, totalAscentM, avgGrade, maxGrade, maxGradeBucket };
 }
 
+export type GradeBin = {
+	startM: number;
+	endM: number;
+	startEle: number;
+	endEle: number;
+	grade: number;
+};
+
+export function computeBins(
+	points: RoutePoint[],
+	startM: number,
+	endM: number,
+	binSizeM = 500
+): GradeBin[] {
+	const bins: GradeBin[] = [];
+	for (let d = startM; d < endM - 1; d += binSizeM) {
+		const binEnd = Math.min(endM, d + binSizeM);
+		const a = findPointAtDistance(points, d);
+		const b = findPointAtDistance(points, binEnd);
+		const run = b.cumDistM - a.cumDistM;
+		if (run <= 0) continue;
+		const grade = ((b.ele - a.ele) / run) * 100;
+		bins.push({
+			startM: a.cumDistM,
+			endM: b.cumDistM,
+			startEle: a.ele,
+			endEle: b.ele,
+			grade
+		});
+	}
+	return bins;
+}
+
 export function gradeColor(grade: number): string {
 	if (grade < -1) return '#64748b';
 	if (grade < 1) return '#eab308';

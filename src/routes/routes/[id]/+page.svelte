@@ -13,11 +13,22 @@
 	let hoverDistM = $state<number | null>(null);
 	let markerA = $state<number | null>(null);
 	let markerB = $state<number | null>(null);
+	let hoveredSegmentId = $state<string | null>(null);
 
 	let savingMode = $state(false);
 	let saveName = $state('');
 	let saving = $state(false);
 	let deletingId = $state<string | null>(null);
+
+	// While a segment row is hovered, preview its A/B on the map + chart.
+	// Interactions (click/drag) are disabled during preview so the user
+	// doesn't accidentally edit their own markers.
+	const hoveredSegment = $derived.by(() =>
+		hoveredSegmentId ? (segments.find((s) => s.id === hoveredSegmentId) ?? null) : null
+	);
+	const displayMarkerA = $derived(hoveredSegment ? hoveredSegment.startDistM : markerA);
+	const displayMarkerB = $derived(hoveredSegment ? hoveredSegment.endDistM : markerB);
+	const previewing = $derived(hoveredSegment != null);
 
 	const crop = $derived.by(() => {
 		if (markerA == null || markerB == null) return null;
@@ -82,11 +93,6 @@
 		markerB = null;
 	}
 
-	function applySegment(startDistM: number, endDistM: number) {
-		markerA = startDistM;
-		markerB = endDistM;
-	}
-
 	function openSave() {
 		saveName = '';
 		savingMode = true;
@@ -133,10 +139,10 @@
 			points={route.points}
 			bounds={route.bounds}
 			bind:hoverDistM
-			{markerA}
-			{markerB}
-			onPlaceMarker={placeMarker}
-			onRemoveMarker={removeMarker}
+			markerA={displayMarkerA}
+			markerB={displayMarkerB}
+			onPlaceMarker={previewing ? undefined : placeMarker}
+			onRemoveMarker={previewing ? undefined : removeMarker}
 		/>
 
 		<div class="rounded-lg border border-neutral-200 bg-white p-3 pt-2">
@@ -151,11 +157,11 @@
 			<ElevationChart
 				points={route.points}
 				bind:hoverDistM
-				{markerA}
-				{markerB}
-				onPlaceMarker={placeMarker}
-				onRemoveMarker={removeMarker}
-				onMoveMarker={moveMarker}
+				markerA={displayMarkerA}
+				markerB={displayMarkerB}
+				onPlaceMarker={previewing ? undefined : placeMarker}
+				onRemoveMarker={previewing ? undefined : removeMarker}
+				onMoveMarker={previewing ? undefined : moveMarker}
 			/>
 		</div>
 
@@ -321,17 +327,25 @@
 			{:else}
 				<ul class="divide-y divide-neutral-200">
 					{#each segmentsWithStats as seg (seg.id)}
-						<li class="flex items-center gap-4 px-4 py-3">
-							<button
-								type="button"
-								onclick={() => applySegment(seg.startDistM, seg.endDistM)}
+						<li
+							class="flex items-center gap-4 px-4 py-3 transition-colors {hoveredSegmentId ===
+							seg.id
+								? 'bg-neutral-50'
+								: ''}"
+							onmouseenter={() => (hoveredSegmentId = seg.id)}
+							onmouseleave={() => {
+								if (hoveredSegmentId === seg.id) hoveredSegmentId = null;
+							}}
+						>
+							<a
+								href="/routes/{route.id}/segments/{seg.id}"
 								class="flex-1 text-left"
 							>
 								<div class="text-sm font-medium">{seg.name}</div>
 								<div class="text-xs text-neutral-500">
 									<code>{seg.id}</code> · {fmtKm(seg.startDistM)} → {fmtKm(seg.endDistM)}
 								</div>
-							</button>
+							</a>
 							<div class="flex items-center gap-5 text-sm tabular-nums">
 								<div class="text-right">
 									<div class="text-[10px] uppercase tracking-wide text-neutral-500">Length</div>
