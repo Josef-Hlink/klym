@@ -77,6 +77,45 @@ export function bucketGradeAtDistance(
 	return { grade, startM, endM };
 }
 
+export type CropStats = {
+	lengthM: number;
+	netGainM: number;
+	avgGrade: number;
+	maxGrade: number;
+	maxGradeBucket: { startM: number; endM: number } | null;
+};
+
+export function computeCropStats(
+	points: RoutePoint[],
+	startM: number,
+	endM: number,
+	binSizeM = 500
+): CropStats {
+	const a = findPointAtDistance(points, startM);
+	const b = findPointAtDistance(points, endM);
+	const lengthM = b.cumDistM - a.cumDistM;
+	const netGainM = b.ele - a.ele;
+	const avgGrade = lengthM > 0 ? (netGainM / lengthM) * 100 : 0;
+
+	let maxGrade = -Infinity;
+	let maxGradeBucket: { startM: number; endM: number } | null = null;
+	for (let d = a.cumDistM; d < b.cumDistM; d += binSizeM) {
+		const binEnd = Math.min(b.cumDistM, d + binSizeM);
+		const p0 = findPointAtDistance(points, d);
+		const p1 = findPointAtDistance(points, binEnd);
+		const run = p1.cumDistM - p0.cumDistM;
+		if (run <= 0) continue;
+		const grade = ((p1.ele - p0.ele) / run) * 100;
+		if (grade > maxGrade) {
+			maxGrade = grade;
+			maxGradeBucket = { startM: p0.cumDistM, endM: p1.cumDistM };
+		}
+	}
+	if (maxGrade === -Infinity) maxGrade = avgGrade;
+
+	return { lengthM, netGainM, avgGrade, maxGrade, maxGradeBucket };
+}
+
 export function gradeColor(grade: number): string {
 	if (grade < -1) return '#64748b';
 	if (grade < 1) return '#eab308';

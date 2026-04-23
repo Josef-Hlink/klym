@@ -9,12 +9,26 @@
 		points: RoutePoint[];
 		bounds: RouteBounds;
 		hoverDistM: number | null;
+		markerA?: number | null;
+		markerB?: number | null;
+		onPlaceMarker?: (distM: number) => void;
+		onRemoveMarker?: (which: 'A' | 'B') => void;
 	};
-	let { points, bounds, hoverDistM = $bindable(null) }: Props = $props();
+	let {
+		points,
+		bounds,
+		hoverDistM = $bindable(null),
+		markerA = null,
+		markerB = null,
+		onPlaceMarker,
+		onRemoveMarker: _onRemoveMarker
+	}: Props = $props();
 
 	let container: HTMLDivElement | null = $state(null);
 	let map: MLMap | null = null;
 	let hoverMarker: Marker | null = null;
+	let markerAEl: Marker | null = null;
+	let markerBEl: Marker | null = null;
 	let ready = $state(false);
 
 	const OSM_STYLE: maplibregl.StyleSpecification = {
@@ -29,6 +43,45 @@
 		},
 		layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
 	};
+
+	function nearestPointDist(lng: number, lat: number): number {
+		let bestIdx = 0;
+		let bestD = Infinity;
+		for (let i = 0; i < points.length; i++) {
+			const dLat = lat - points[i].lat;
+			const dLng = lng - points[i].lon;
+			const d = dLat * dLat + dLng * dLng;
+			if (d < bestD) {
+				bestD = d;
+				bestIdx = i;
+			}
+		}
+		return points[bestIdx].cumDistM;
+	}
+
+	function cropCoords(startM: number, endM: number): [number, number][] {
+		const out: [number, number][] = [];
+		const a = findPointAtDistance(points, startM);
+		out.push([a.lon, a.lat]);
+		for (let i = a.idx; i < points.length; i++) {
+			const p = points[i];
+			if (p.cumDistM <= startM) continue;
+			if (p.cumDistM >= endM) break;
+			out.push([p.lon, p.lat]);
+		}
+		const b = findPointAtDistance(points, endM);
+		out.push([b.lon, b.lat]);
+		return out;
+	}
+
+	function makeLabelEl(label: string, bg: string): HTMLDivElement {
+		const el = document.createElement('div');
+		el.className =
+			'flex h-6 w-6 items-center justify-center rounded-full border-2 border-white text-[11px] font-semibold text-white shadow-md';
+		el.style.backgroundColor = bg;
+		el.textContent = label;
+		return el;
+	}
 
 	onMount(() => {
 		if (!container) return;
@@ -58,6 +111,15 @@
 					properties: {}
 				}
 			});
+			map.addSource('track-crop', {
+				type: 'geojson',
+				data: {
+					type: 'Feature',
+					geometry: { type: 'LineString', coordinates: [] },
+					properties: {}
+				}
+			});
+
 			map.addLayer({
 				id: 'track-casing',
 				type: 'line',
@@ -72,6 +134,13 @@
 				layout: { 'line-cap': 'round', 'line-join': 'round' },
 				paint: { 'line-color': '#ff6b00', 'line-width': 4 }
 			});
+			map.addLayer({
+				id: 'track-crop',
+				type: 'line',
+				source: 'track-crop',
+				layout: { 'line-cap': 'round', 'line-join': 'round' },
+				paint: { 'line-color': '#b91c1c', 'line-width': 5 }
+			});
 
 			const start = points[0];
 			const end = points[points.length - 1];
@@ -82,12 +151,26 @@
 				.setLngLat([end.lon, end.lat])
 				.addTo(map);
 
+			map.on('mouseenter', 'track-casing', () => {
+				if (map) map.getCanvas().style.cursor = 'crosshair';
+			});
+			map.on('mouseleave', 'track-casing', () => {
+				if (map) map.getCanvas().style.cursor = '';
+			});
+			map.on('click', 'track-casing', (e) => {
+				if (!onPlaceMarker) return;
+				const distM = nearestPointDist(e.lngLat.lng, e.lngLat.lat);
+				onPlaceMarker(distM);
+			});
+
 			ready = true;
 		});
 	});
 
 	onDestroy(() => {
 		hoverMarker?.remove();
+		markerAEl?.remove();
+		markerBEl?.remove();
 		map?.remove();
 		map = null;
 	});
@@ -108,6 +191,61 @@
 		} else {
 			hoverMarker.setLngLat([p.lon, p.lat]);
 		}
+	});
+
+	$effect(() => {
+		if (!ready || !map) return;
+		if (markerA == null) {
+			markerAEl?.remove();
+			markerAEl = null;
+		} else {
+			const p = findPointAtDistance(points, markerA);
+			if (!markerAEl) {
+				markerAEl = new maplibregl.Marker({ element: makeLabelEl('A', '#059669') })
+					.setLngLat([p.lon, p.lat])
+					.addTo(map);
+			} else {
+				markerAEl.setLngLat([p.lon, p.lat]);
+			}
+		}
+	});
+
+	$effect(() => {
+		if (!ready || !map) return;
+		if (markerB == null) {
+			markerBEl?.remove();
+			markerBEl = null;
+		} else {
+			const p = findPointAtDistance(points, markerB);
+			if (!markerBEl) {
+				markerBEl = new maplibregl.Marker({ element: makeLabelEl('B', '#dc2626') })
+					.setLngLat([p.lon, p.lat])
+					.addTo(map);
+			} else {
+				markerBEl.setLngLat([p.lon, p.lat]);
+			}
+		}
+	});
+
+	$effect(() => {
+		if (!ready || !map) return;
+		const src = map.getSource('track-crop') as maplibregl.GeoJSONSource | undefined;
+		if (!src) return;
+		if (markerA == null || markerB == null) {
+			src.setData({
+				type: 'Feature',
+				geometry: { type: 'LineString', coordinates: [] },
+				properties: {}
+			});
+			return;
+		}
+		const [startM, endM] =
+			markerA <= markerB ? [markerA, markerB] : [markerB, markerA];
+		src.setData({
+			type: 'Feature',
+			geometry: { type: 'LineString', coordinates: cropCoords(startM, endM) },
+			properties: {}
+		});
 	});
 </script>
 
