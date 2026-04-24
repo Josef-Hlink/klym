@@ -7,9 +7,7 @@ Context for future Claude sessions working on klym.
 A local-only, single-user web app that turns GPX files into
 climbfinder.com-style colored-bar climb profile images. Users manually
 select climbs with two markers on a synced map + elevation chart; no
-automatic climb-detection algorithms. The repo was originally scaffolded
-in a directory named `climbly` — the project is now called **klym** and
-the parent directory rename is pending a future session.
+automatic climb-detection algorithms.
 
 Remote: `Josef-Hlink/klym` (private, MIT).
 

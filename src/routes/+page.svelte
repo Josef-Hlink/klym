@@ -77,6 +77,7 @@
 
 <main class="mx-auto max-w-3xl px-6 py-12">
 	<header class="mb-10">
+		<img src="/logo.svg" alt="" class="mb-3 h-14 w-14" />
 		<h1 class="text-3xl font-semibold tracking-tight">klym</h1>
 		<p class="mt-1 text-sm text-neutral-600">
 			Upload a GPX, pick two points, get a climbfinder-style profile image.
