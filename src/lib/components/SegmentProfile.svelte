@@ -13,6 +13,8 @@
 		title?: string;
 		subtitle?: string;
 		labelMode?: GradeLabelMode;
+		externalHoverDistM?: number | null;
+		hoverDistM?: number | null;
 		svgEl?: SVGSVGElement | null;
 	};
 	let {
@@ -24,6 +26,8 @@
 		title = 'klym',
 		subtitle = '',
 		labelMode = 'percent',
+		externalHoverDistM = null,
+		hoverDistM = $bindable(null),
 		svgEl = $bindable(null)
 	}: Props = $props();
 
@@ -34,7 +38,7 @@
 
 	const W = 1600;
 	const H = 800;
-	const M = { top: 100, right: 90, bottom: 70, left: 60 };
+	const M = { top: 144, right: 90, bottom: 70, left: 60 };
 	const plotW = W - M.left - M.right;
 	const plotH = H - M.top - M.bottom;
 	const yBot = M.top + plotH;
@@ -54,6 +58,15 @@
 	});
 
 	const bins = $derived(binsProp ?? computeBins(points, startDistM, endDistM, binSizeM));
+
+	const externalHoverIdx = $derived.by(() => {
+		if (externalHoverDistM == null) return -1;
+		const d = externalHoverDistM;
+		for (let i = 0; i < bins.length; i++) {
+			if (d >= bins[i].startM && d <= bins[i].endM) return i;
+		}
+		return -1;
+	});
 
 	const yRange = $derived.by(() => {
 		if (slicedPoints.length === 0) return { min: 0, max: 100 };
@@ -178,6 +191,14 @@
 		bins;
 		hover = null;
 	});
+	$effect(() => {
+		if (hover && bins[hover.idx]) {
+			const b = bins[hover.idx];
+			hoverDistM = (b.startM + b.endM) / 2;
+		} else {
+			hoverDistM = null;
+		}
+	});
 
 	function updateHover(e: PointerEvent, idx: number) {
 		if (!wrapperEl) return;
@@ -197,9 +218,18 @@
 >
 	<rect width={W} height={H} fill="#f4f4f5" />
 
-	<text x={M.left} y="38" font-size="26" font-weight="800" fill="#111">{title}</text>
+	<!-- Logo: scaled-down inline copy of static/logo.svg, baseline aligned
+	     with the title text. -->
+	<g transform="translate({M.left}, 53) scale(0.5)">
+		<polygon points="4,58 4,52 15,44 15,58" fill="#eab308" />
+		<polygon points="15,58 15,44 26,34 26,58" fill="#f59e0b" />
+		<polygon points="26,58 26,34 37,20 37,58" fill="#f97316" />
+		<polygon points="37,58 37,20 48,4 48,58" fill="#dc2626" />
+		<polygon points="48,58 48,4 59,58" fill="#7f1d1d" />
+	</g>
+	<text x={M.left + 40} y="82" font-size="26" font-weight="800" fill="#111">{title}</text>
 	{#if subtitle}
-		<text x={M.left} y="68" font-size="22" font-weight="600" fill="#a1a1aa">{subtitle}</text>
+		<text x={M.left} y="112" font-size="22" font-weight="600" fill="#a1a1aa">{subtitle}</text>
 	{/if}
 
 	{#each yTicks as tick (tick)}
@@ -330,6 +360,13 @@
 			fill-opacity="0.18"
 			pointer-events="none"
 		/>
+	{:else if externalHoverIdx >= 0 && binAreas[externalHoverIdx]}
+		<path
+			d={binAreas[externalHoverIdx].path}
+			fill="#ffffff"
+			fill-opacity="0.18"
+			pointer-events="none"
+		/>
 	{/if}
 
 	{#each bins as bin, i (bin.startM)}
@@ -368,6 +405,40 @@
 		class="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-neutral-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-lg"
 		style:left="{xClamped}px"
 		style:top="{hover.y - 12}px"
+	>
+		<div class="tabular-nums">
+			{lenM} m <span class="text-neutral-400">({aKm.toFixed(1)} → {bKm.toFixed(1)} km)</span>
+		</div>
+		<div class="mt-0.5 flex items-center gap-1.5">
+			<span
+				class="inline-block h-2 w-2 rounded-full"
+				style:background-color={gradeColor(bin.grade)}
+			></span>
+			<span class="tabular-nums">
+				{bin.grade.toFixed(1)}% <span class="text-neutral-400">({gainM >= 0 ? '+' : ''}{gainM} m)</span>
+			</span>
+		</div>
+	</div>
+{:else if externalHoverIdx >= 0 && bins[externalHoverIdx] && binAreas[externalHoverIdx]}
+	{@const bin = bins[externalHoverIdx]}
+	{@const area = binAreas[externalHoverIdx]}
+	{@const aKm = (bin.startM - startDistM) / 1000}
+	{@const bKm = (bin.endM - startDistM) / 1000}
+	{@const lenM = Math.round(bin.endM - bin.startM)}
+	{@const gainM = Math.round(bin.endEle - bin.startEle)}
+	{@const cssScale = wrapperW > 0 ? wrapperW / W : 1}
+	{@const xRaw = area.xCenter * cssScale}
+	{@const yRaw = M.top * cssScale}
+	{@const half = tooltipW / 2}
+	{@const xClamped =
+		wrapperW > 0 && tooltipW > 0
+			? Math.max(half + 4, Math.min(wrapperW - half - 4, xRaw))
+			: xRaw}
+	<div
+		bind:clientWidth={tooltipW}
+		class="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-neutral-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-lg"
+		style:left="{xClamped}px"
+		style:top="{yRaw - 8}px"
 	>
 		<div class="tabular-nums">
 			{lenM} m <span class="text-neutral-400">({aKm.toFixed(1)} → {bKm.toFixed(1)} km)</span>

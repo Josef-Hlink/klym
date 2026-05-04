@@ -1,5 +1,6 @@
 <script lang="ts">
 	import SegmentProfile, { type GradeLabelMode } from '$lib/components/SegmentProfile.svelte';
+	import SegmentMap from '$lib/components/SegmentMap.svelte';
 	import { computeAdaptiveBins, computeBins, computeCropStats, gradeColor } from '$lib/elevation.js';
 	import type { PageProps } from './$types.js';
 
@@ -15,6 +16,9 @@
 	type BinMode = 'fixed' | 'adaptive';
 	let binMode = $state<BinMode>('fixed');
 	let epsilonM = $state(5);
+
+	let mapHoverDistM = $state<number | null>(null);
+	let chartHoverDistM = $state<number | null>(null);
 
 	let labelMode = $state<GradeLabelMode>('percent');
 	const labelModeOptions: { value: GradeLabelMode; label: string }[] = [
@@ -368,14 +372,27 @@
 	<div class="overflow-hidden rounded-lg border border-neutral-200 bg-white">
 		<SegmentProfile
 			bind:svgEl
+			bind:hoverDistM={chartHoverDistM}
 			points={route.points}
 			startDistM={segment.startDistM}
 			endDistM={segment.endDistM}
 			{binSizeM}
 			bins={activeBins}
 			{labelMode}
+			externalHoverDistM={mapHoverDistM}
 			title="klym"
 			subtitle="{segment.name} — {route.name}"
+		/>
+	</div>
+
+	<div class="mt-4 overflow-hidden rounded-lg border border-neutral-200 bg-white">
+		<SegmentMap
+			points={route.points}
+			startDistM={segment.startDistM}
+			endDistM={segment.endDistM}
+			bins={activeBins}
+			bind:hoverDistM={mapHoverDistM}
+			externalHoverDistM={chartHoverDistM}
 		/>
 	</div>
 

@@ -123,6 +123,88 @@ background, then `canvas.toBlob`. Copy-to-clipboard uses the same blob
 via `navigator.clipboard.write([new ClipboardItem(...)])`. SVG download
 is just `Blob([xml])` with `image/svg+xml`.
 
+The chart's logo is **inlined as polygons** in `SegmentProfile.svelte`
+(scaled-down copy of `static/logo.svg`) so it survives serialization
+without a separate `<image href>` round-trip. CSS classes are not
+preserved when an SVG is rendered from a data URL — only inline
+attributes and direct presentation styles. Anything you want to be
+visible in the export must be encoded that way.
+
+### SegmentMap (3D segment view)
+
+Lives at the bottom of the segment page. Pure SVG, no MapLibre — every
+pixel is hand-computed.
+
+- **Projection** is orthographic. `projectLLE(lat, lon, ele)` converts
+  to metres around the segment center (longitude scaled by
+  `cos(centerLat)`), applies `rotate3d(yaw, pitch)`, then maps to SVG
+  via a single `dimensions.scale` derived to fit the route in the
+  canvas. Returns `[svgX, svgY, depth]`. `depth` (rotated z) is used
+  for painter's-algorithm ordering of the colored polyline runs.
+- **Polylines** are grouped by run of same-color segments (one
+  `<polyline>` per run) so we don't pay the per-segment cost of one
+  element each. Sorted back-to-front by average depth.
+- **OSM ground texture** is built client-side: pick a slippy-tile zoom
+  that keeps the route bbox under `TILE_MAX_TILES_PER_AXIS` (6), fetch
+  all tiles in parallel, composite onto an offscreen canvas, export as
+  a single `data:image/png` URL, then placed in the SVG via an `<image
+  width="1" height="1">` with an **affine matrix transform**
+  (`tileTransform`) that maps the unit square to the rotated ground
+  parallelogram. Works because orthographic projection preserves
+  parallelism — a planar rectangle stays a parallelogram under any
+  rotation, so an affine matrix is sufficient. Faded out as pitch
+  approaches 90° (`tileOpacity` between `TILE_FADE_START` and
+  `TILE_FADE_END`).
+- **Earth block**: four side polygons drop `BLOCK_DEPTH_M` (100m)
+  below the OSM ground at the same lat/lon corners as the tile image,
+  sorted back-to-front. Light-beige fill (`#f0e6d6`, stroke `#d4c5ad`)
+  gives the ground the feel of sitting on actual terrain volume rather
+  than a paper map. Shares `tileOpacity` so the whole "ground" fades
+  together at high pitch.
+- **Anchor lines** (renamed from "drop lines"): two layers of vertical
+  drops from the route surface to `refFrame.minEle`. The thin sample
+  layer (every `ANCHOR_STEP_M = 250m`, neutral 12% opacity) gives a
+  density independent of GPX point density. The thicker per-bin
+  boundary layer is colored by the bin that *ends* at each boundary,
+  so the last point of the segment is always anchored — the start dot
+  already pins the start.
+- **Slice clamping**: `slicedPoints` uses `findPointAtDistance` to
+  interpolate exact start/end points instead of stopping at the last
+  GPX point ≤ `endDistM`. Without this, the route polyline + start/end
+  dots end at the last GPX vertex while distance-driven features
+  (anchor lines, hover) interpolate to the true segment end, and the
+  two visibly diverge.
+
+### SegmentMap controls and 2D/3D toggle
+
+- **Bottom-left**: Map toggle (OSM tile + earth block).
+- **Bottom-right**: Anchor-lines toggle, Vertical exaggeration popover
+  (Windows-volume-control style — square button shows current `n×`,
+  hover opens a vertical slider via `writing-mode: vertical-lr;
+  direction: rtl;`), 2D/3D toggle pinned rightmost. The middle two
+  hide in 2D mode.
+- **2D/3D pose memory**: `is3D` is `pitch > 0.01`. An effect mirrors
+  live `(pitch, yaw)` into `(savedPitch, savedYaw)` while in 3D, so
+  flatten-and-restore works even for poses reached via drag rather
+  than the toggle. Default 3D preset is `Math.PI / 4` if there's no
+  saved pose yet.
+- **Resize handle**: bottom-right corner, document-level pointer
+  listeners (not `setPointerCapture`, which would steal events from
+  uPlot or the SVG hit-testing). When the user has resized,
+  `dimensions.canvasAspect` is recomputed from `wrapperWidth /
+  userHeight` so the projection refits without letterboxing.
+- **Reset view** appears top-right when zoom/pan/rotation differ from
+  defaults. Doesn't touch `zExaggeration` or saved 3D pose.
+
+### Cross-component hover
+
+`SegmentProfile` and `SegmentMap` each expose a `hoverDistM`
+`$bindable` (live distance under cursor) and accept an
+`externalHoverDistM` prop (peer's hover, drives a halo highlight on
+the corresponding bar/polyline section). Parent wires them through
+**two separate state vars** (`mapHoverDistM`, `chartHoverDistM`) — do
+NOT bind both ends to the same variable, that would loop.
+
 ## UI conventions
 
 - Tailwind only, no component library.
@@ -144,5 +226,6 @@ is just `Blob([xml])` with `image/svg+xml`.
 ## Milestones shipped
 
 M1 scaffold · M2 GPX upload + parse · M3 route viewer · M4 two-marker
-crop · M5 save / list / delete segments · M6 CF-style image + export.
-MVP complete as of `main`.
+crop · M5 save / list / delete segments · M6 CF-style image + export ·
+M7 route/segment management (rename + delete + adjust) · M8 SegmentMap
+3D topo view (OSM ground, anchor lines, 2D/3D toggle, resizable).
