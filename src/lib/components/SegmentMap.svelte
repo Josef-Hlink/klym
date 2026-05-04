@@ -303,12 +303,31 @@
 		}
 		await Promise.all(loads);
 
+		// Crop the composited canvas down to the *requested* bbox so its edges
+		// align with the route bbox + padding. Without this the tile image keeps
+		// the floor/ceil overhang to whole-tile boundaries, which is
+		// asymmetric around the route — visibly more "map" on one side.
+		const cropX0 = Math.max(0, (lonToTileX(bbox.minLon, zoom) - xMin) * TILE_SIZE);
+		const cropX1 = Math.min(w, (lonToTileX(bbox.maxLon, zoom) - xMin) * TILE_SIZE);
+		const cropY0 = Math.max(0, (latToTileY(bbox.maxLat, zoom) - yMin) * TILE_SIZE);
+		const cropY1 = Math.min(h, (latToTileY(bbox.minLat, zoom) - yMin) * TILE_SIZE);
+		const cw = Math.round(cropX1 - cropX0);
+		const ch = Math.round(cropY1 - cropY0);
+		if (cw <= 0 || ch <= 0) return null;
+
+		const cropped = document.createElement('canvas');
+		cropped.width = cw;
+		cropped.height = ch;
+		const cctx = cropped.getContext('2d');
+		if (!cctx) return null;
+		cctx.drawImage(canvas, cropX0, cropY0, cw, ch, 0, 0, cw, ch);
+
 		return {
-			url: canvas.toDataURL('image/png'),
-			minLon: tileXToLon(xMin, zoom),
-			maxLon: tileXToLon(xMax, zoom),
-			maxLat: tileYToLat(yMin, zoom),
-			minLat: tileYToLat(yMax, zoom)
+			url: cropped.toDataURL('image/png'),
+			minLon: bbox.minLon,
+			maxLon: bbox.maxLon,
+			maxLat: bbox.maxLat,
+			minLat: bbox.minLat
 		};
 	}
 
@@ -329,8 +348,26 @@
 			if (p.lon < minLon) minLon = p.lon;
 			if (p.lon > maxLon) maxLon = p.lon;
 		}
-		const latPad = (maxLat - minLat) * TILE_BBOX_PAD;
-		const lonPad = (maxLon - minLon) * TILE_BBOX_PAD;
+		const baseLatPad = (maxLat - minLat) * TILE_BBOX_PAD;
+		const baseLonPad = (maxLon - minLon) * TILE_BBOX_PAD;
+
+		// Extend the tile bbox to cover the canvas, not just the route. For a
+		// portrait route in a landscape canvas the route alone leaves a narrow
+		// strip of map; here we compute how many extra metres we need on each
+		// axis to fill the canvas after the fit-contain projection, then
+		// translate that back into lat/lon padding.
+		const trueAspect = refFrame.xSpanM / refFrame.ySpanM;
+		const canvasAspect = Math.max(MIN_CANVAS_ASPECT, trueAspect);
+		const canvasXspanM =
+			canvasAspect > trueAspect ? canvasAspect * refFrame.ySpanM : refFrame.xSpanM;
+		const canvasYspanM =
+			canvasAspect > trueAspect ? refFrame.ySpanM : refFrame.xSpanM / canvasAspect;
+		const extraLonPad =
+			Math.max(0, canvasXspanM - refFrame.xSpanM) / 2 / (refFrame.cosLat * M_PER_DEG);
+		const extraLatPad = Math.max(0, canvasYspanM - refFrame.ySpanM) / 2 / M_PER_DEG;
+
+		const lonPad = Math.max(baseLonPad, extraLonPad);
+		const latPad = Math.max(baseLatPad, extraLatPad);
 		const padded = {
 			minLat: minLat - latPad,
 			maxLat: maxLat + latPad,
