@@ -56,24 +56,52 @@
 	// while in 3D, so flattening and toggling back restores whatever the user
 	// was on — even poses reached via drag rather than the toggle.
 	const PITCH_PRESET_3D = Math.PI / 4;
+	const TOGGLE_TRANSITION_MS = 360;
 	let savedPitch = $state<number | null>(null);
 	let savedYaw = $state<number | null>(null);
 	const is3D = $derived(pitch > 0.01);
+	let isToggleAnimating = false;
+	let toggleAnimFrame: number | null = null;
+
 	$effect(() => {
-		if (pitch > 0.01) {
+		// Skip while the toggle animation is interpolating — those are transient
+		// values, not the user's "real" 3D pose. Drag-driven rotation has
+		// isToggleAnimating=false so it still saves continuously.
+		if (pitch > 0.01 && !isToggleAnimating) {
 			savedPitch = pitch;
 			savedYaw = yaw;
 		}
 	});
 
-	function toggle3D() {
-		if (is3D) {
-			pitch = 0;
-			yaw = 0;
-		} else {
-			pitch = savedPitch ?? PITCH_PRESET_3D;
-			yaw = savedYaw ?? 0;
+	function cancelToggleAnim() {
+		if (toggleAnimFrame !== null) {
+			cancelAnimationFrame(toggleAnimFrame);
+			toggleAnimFrame = null;
 		}
+		isToggleAnimating = false;
+	}
+
+	function toggle3D() {
+		const targetPitch = is3D ? 0 : (savedPitch ?? PITCH_PRESET_3D);
+		const targetYaw = is3D ? 0 : (savedYaw ?? 0);
+		cancelToggleAnim();
+		const startPitch = pitch;
+		const startYaw = yaw;
+		const t0 = performance.now();
+		isToggleAnimating = true;
+		const tick = (now: number) => {
+			const t = Math.min(1, (now - t0) / TOGGLE_TRANSITION_MS);
+			const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
+			pitch = startPitch + (targetPitch - startPitch) * eased;
+			yaw = startYaw + (targetYaw - startYaw) * eased;
+			if (t < 1) {
+				toggleAnimFrame = requestAnimationFrame(tick);
+			} else {
+				toggleAnimFrame = null;
+				isToggleAnimating = false;
+			}
+		};
+		toggleAnimFrame = requestAnimationFrame(tick);
 	}
 
 	// User-resized height (px). null = use data-derived aspect.
@@ -662,6 +690,9 @@
 		// Ctrl/Cmd on pointerdown opens contextmenu by default on some platforms;
 		// preventDefault keeps our handler in control.
 		if (isRotateModifier(e)) e.preventDefault();
+		// Freeze any in-flight toggle animation so the drag takes over from the
+		// current values rather than racing rAF for pitch/yaw.
+		cancelToggleAnim();
 		isDragging = true;
 		dragMode = isRotateModifier(e) ? 'rotate' : 'pan';
 		dragStart = {
@@ -805,6 +836,7 @@
 		document.removeEventListener('pointermove', onResizeMove);
 		document.removeEventListener('pointerup', onResizeUp);
 		if (vertHideTimer) clearTimeout(vertHideTimer);
+		cancelToggleAnim();
 		document.body.style.cursor = '';
 	});
 
