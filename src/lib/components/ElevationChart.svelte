@@ -58,12 +58,34 @@
 		return px + plotOffsetLeft();
 	}
 
-	const markerAPx = $derived(distToPx(markerA));
-	const markerBPx = $derived(distToPx(markerB));
+	const plotBounds = $derived.by(() => {
+		plotVersion;
+		if (!u) return null;
+		const px = uPlot.pxRatio || 1;
+		const left = u.bbox.left / px;
+		const width = u.bbox.width / px;
+		return { left, right: left + width };
+	});
+
+	function visiblePx(distM: number | null): number | null {
+		const raw = distToPx(distM);
+		if (raw == null || !plotBounds) return null;
+		if (raw < plotBounds.left || raw > plotBounds.right) return null;
+		return raw;
+	}
+
+	const markerAPx = $derived(visiblePx(markerA));
+	const markerBPx = $derived(visiblePx(markerB));
 	const cropRange = $derived.by(() => {
-		if (markerAPx == null || markerBPx == null) return null;
-		const left = Math.min(markerAPx, markerBPx);
-		const width = Math.abs(markerBPx - markerAPx);
+		if (markerA == null || markerB == null || !plotBounds) return null;
+		const aRaw = distToPx(markerA);
+		const bRaw = distToPx(markerB);
+		if (aRaw == null || bRaw == null) return null;
+		const lo = Math.min(aRaw, bRaw);
+		const hi = Math.max(aRaw, bRaw);
+		const left = Math.max(lo, plotBounds.left);
+		const right = Math.min(hi, plotBounds.right);
+		const width = right - left;
 		if (width < 1) return null;
 		return { left, width };
 	});
@@ -106,7 +128,13 @@
 					stroke: '#737373',
 					grid: { stroke: '#f5f5f5' },
 					ticks: { stroke: '#e5e5e5' },
-					values: (_u, splits) => splits.map((v) => `${v.toFixed(0)} km`)
+					values: (_u, splits) => {
+						const gap =
+							splits.length > 1 ? Math.abs(splits[1] - splits[0]) : 1;
+						const decimals =
+							gap >= 1 ? 0 : gap >= 0.1 ? 1 : gap >= 0.01 ? 2 : 3;
+						return splits.map((v) => `${v.toFixed(decimals)} km`);
+					}
 				},
 				{
 					stroke: '#737373',
@@ -145,6 +173,7 @@
 
 		u = new uPlot(opts, [xs, ys], container);
 		plotVersion++;
+		xRange = { min: 0, max: totalKm };
 
 		ro = new ResizeObserver(() => {
 			if (!u || !container) return;
@@ -152,10 +181,15 @@
 			plotVersion++;
 		});
 		ro.observe(container);
+
+		// addEventListener with passive:false so preventDefault on wheel works
+		// and zooming doesn't scroll the page.
+		wrapperEl?.addEventListener('wheel', onWheel, { passive: false });
 	});
 
 	onDestroy(() => {
 		ro?.disconnect();
+		wrapperEl?.removeEventListener('wheel', onWheel);
 		u?.destroy();
 		u = null;
 	});
@@ -172,34 +206,120 @@
 	let dragMoved = false;
 	const DRAG_THRESHOLD_PX = 4;
 
-	let armedChip = $state<'A' | 'B' | null>(null);
-	const NUDGE_FINE_M = 5;
-	const NUDGE_COARSE_M = 50;
+	let xRange = $state<{ min: number; max: number } | null>(null);
+	const totalKm = $derived(
+		points.length > 0 ? points[points.length - 1].cumDistM / 1000 : 0
+	);
+	const isZoomed = $derived(
+		xRange != null &&
+			totalKm > 0 &&
+			(xRange.min > 0.001 || xRange.max < totalKm - 0.001)
+	);
+	const ZOOM_FACTOR = 0.85;
+	const MIN_VISIBLE_KM = 0.1;
 
-	$effect(() => {
-		if (armedChip == null || !onMoveMarker) return;
-		const which = armedChip;
-		const handler = (e: KeyboardEvent) => {
-			if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-			const current = which === 'A' ? markerA : markerB;
-			if (current == null) return;
-			e.preventDefault();
-			const dir = e.key === 'ArrowLeft' ? -1 : 1;
-			const step = e.shiftKey ? NUDGE_COARSE_M : NUDGE_FINE_M;
-			const total = points[points.length - 1].cumDistM;
-			const next = Math.max(0, Math.min(total, current + dir * step));
-			onMoveMarker(which, next);
-		};
-		document.addEventListener('keydown', handler);
-		return () => document.removeEventListener('keydown', handler);
-	});
+	function setXRange(min: number, max: number) {
+		if (!u) return;
+		u.setScale('x', { min, max });
+		xRange = { min, max };
+		plotVersion++;
+	}
+
+	function resetZoom(e?: Event) {
+		e?.stopPropagation();
+		if (totalKm > 0) setXRange(0, totalKm);
+	}
+
+	function onWheel(e: WheelEvent) {
+		if (!u || points.length === 0 || !container) return;
+		e.preventDefault();
+		const rect = container.getBoundingClientRect();
+		const px = (uPlot.pxRatio || 1);
+		const plotX = e.clientX - rect.left - u.bbox.left / px;
+		const plotW = u.bbox.width / px;
+		if (plotX < 0 || plotX > plotW) return;
+		const cursorVal = u.posToVal(plotX, 'x');
+		if (cursorVal == null || !Number.isFinite(cursorVal)) return;
+
+		const min = u.scales.x.min ?? 0;
+		const max = u.scales.x.max ?? totalKm;
+		const width = max - min;
+		const factor = e.deltaY < 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR;
+		const newWidth = Math.max(MIN_VISIBLE_KM, Math.min(totalKm, width * factor));
+		const offset = width > 0 ? (cursorVal - min) / width : 0.5;
+		let newMin = cursorVal - offset * newWidth;
+		let newMax = newMin + newWidth;
+		if (newMin < 0) {
+			newMin = 0;
+			newMax = newWidth;
+		}
+		if (newMax > totalKm) {
+			newMax = totalKm;
+			newMin = Math.max(0, totalKm - newWidth);
+		}
+		setXRange(newMin, newMax);
+	}
+
+	let isPanning = false;
+	let panStartX = 0;
+	let panStartRange: { min: number; max: number } | null = null;
+	let panMoved = false;
+	const PAN_THRESHOLD_PX = 4;
+
+	function onDocPointerMove(e: PointerEvent) {
+		if (!isPanning) return;
+		const dx = e.clientX - panStartX;
+		if (!panMoved && Math.abs(dx) > PAN_THRESHOLD_PX) {
+			panMoved = true;
+			if (isZoomed) document.body.style.cursor = 'grabbing';
+		}
+		if (!panMoved || !isZoomed || !u || !panStartRange) return;
+
+		const px = uPlot.pxRatio || 1;
+		const plotWPx = u.bbox.width / px;
+		const range = panStartRange.max - panStartRange.min;
+		const kmPerPx = range / plotWPx;
+		const dKm = -dx * kmPerPx;
+		let newMin = panStartRange.min + dKm;
+		let newMax = panStartRange.max + dKm;
+		if (newMin < 0) {
+			newMax -= newMin;
+			newMin = 0;
+		}
+		if (newMax > totalKm) {
+			newMin -= newMax - totalKm;
+			newMax = totalKm;
+		}
+		newMin = Math.max(0, Math.min(newMin, totalKm));
+		newMax = Math.max(newMin, Math.min(newMax, totalKm));
+		setXRange(newMin, newMax);
+	}
+
+	function onDocPointerUp() {
+		if (!isPanning) return;
+		document.removeEventListener('pointermove', onDocPointerMove);
+		document.removeEventListener('pointerup', onDocPointerUp);
+		isPanning = false;
+		document.body.style.cursor = '';
+		if (!panMoved && onPlaceMarker && u) {
+			const idx = u.cursor.idx;
+			if (idx != null && idx >= 0 && idx < points.length) {
+				onPlaceMarker(points[idx].cumDistM);
+			}
+		}
+		panStartRange = null;
+		panMoved = false;
+	}
 
 	function handlePointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
-		if (!u || !onPlaceMarker) return;
-		const idx = u.cursor.idx;
-		if (idx == null || idx < 0 || idx >= points.length) return;
-		onPlaceMarker(points[idx].cumDistM);
+		if (!u) return;
+		isPanning = true;
+		panStartX = e.clientX;
+		panStartRange = xRange ? { ...xRange } : null;
+		panMoved = false;
+		document.addEventListener('pointermove', onDocPointerMove);
+		document.addEventListener('pointerup', onDocPointerUp);
 	}
 
 	function wrapXToDistM(wrapX: number): number | null {
@@ -257,6 +377,18 @@
 >
 	<div bind:this={container} class="w-full cursor-crosshair"></div>
 
+	{#if isZoomed}
+		<button
+			type="button"
+			onpointerdown={(e) => e.stopPropagation()}
+			onclick={resetZoom}
+			class="absolute right-2 top-2 z-30 rounded-md bg-white/90 px-2 py-1 text-[11px] font-medium text-neutral-600 shadow-sm hover:bg-white hover:text-neutral-900"
+			aria-label="Reset zoom"
+		>
+			Reset zoom
+		</button>
+	{/if}
+
 	{#if cropRange}
 		<div
 			class="pointer-events-none absolute bg-orange-200/35"
@@ -277,19 +409,15 @@
 		></div>
 		<button
 			type="button"
-			aria-label="Marker A — drag to move, hover and use ←/→ to nudge, click to delete"
-			title="Drag · hover + ←/→ nudge (Shift = ±50 m) · click to delete"
+			aria-label="Marker A — drag to move, click to delete"
+			title="Drag to move · click to delete"
 			onpointerdown={(e) => onChipPointerDown(e, 'A')}
 			onpointermove={(e) => onChipPointerMove(e, 'A')}
 			onpointerup={(e) => onChipPointerUp(e, 'A')}
-			onpointerenter={() => (armedChip = 'A')}
-			onpointerleave={() => {
-				if (armedChip === 'A') armedChip = null;
-			}}
-			class="absolute z-20 flex h-5 w-7 -translate-x-1/2 items-center justify-center rounded-full bg-emerald-600 text-[11px] font-semibold leading-none text-white shadow-sm transition-colors hover:bg-emerald-700 {armedChip ===
+			class="absolute z-20 flex h-5 w-7 -translate-x-1/2 items-center justify-center rounded-full bg-emerald-600 text-[11px] font-semibold leading-none text-white shadow-sm transition-colors hover:bg-emerald-700 {dragging ===
 			'A'
-				? 'ring-2 ring-emerald-300'
-				: ''} {dragging === 'A' ? 'cursor-grabbing' : 'cursor-grab'}"
+				? 'cursor-grabbing'
+				: 'cursor-grab'}"
 			style:left="{markerAPx}px"
 			style:top="{CHART_H - 8}px"
 		>
@@ -307,19 +435,15 @@
 		></div>
 		<button
 			type="button"
-			aria-label="Marker B — drag to move, hover and use ←/→ to nudge, click to delete"
-			title="Drag · hover + ←/→ nudge (Shift = ±50 m) · click to delete"
+			aria-label="Marker B — drag to move, click to delete"
+			title="Drag to move · click to delete"
 			onpointerdown={(e) => onChipPointerDown(e, 'B')}
 			onpointermove={(e) => onChipPointerMove(e, 'B')}
 			onpointerup={(e) => onChipPointerUp(e, 'B')}
-			onpointerenter={() => (armedChip = 'B')}
-			onpointerleave={() => {
-				if (armedChip === 'B') armedChip = null;
-			}}
-			class="absolute z-20 flex h-5 w-7 -translate-x-1/2 items-center justify-center rounded-full bg-red-600 text-[11px] font-semibold leading-none text-white shadow-sm transition-colors hover:bg-red-700 {armedChip ===
+			class="absolute z-20 flex h-5 w-7 -translate-x-1/2 items-center justify-center rounded-full bg-red-600 text-[11px] font-semibold leading-none text-white shadow-sm transition-colors hover:bg-red-700 {dragging ===
 			'B'
-				? 'ring-2 ring-red-300'
-				: ''} {dragging === 'B' ? 'cursor-grabbing' : 'cursor-grab'}"
+				? 'cursor-grabbing'
+				: 'cursor-grab'}"
 			style:left="{markerBPx}px"
 			style:top="{CHART_H - 8}px"
 		>

@@ -72,6 +72,8 @@
 		if (markerA != null && markerB != null) {
 			if (distM < markerA) markerA = distM;
 			else if (distM > markerB) markerB = distM;
+			else if (distM - markerA < markerB - distM) markerA = distM;
+			else markerB = distM;
 			return;
 		}
 		if (markerA != null) {
@@ -229,7 +231,7 @@
 					Elevation
 				</span>
 				<span class="text-[11px] text-neutral-400">
-					click outside to set A / B · drag chips to adjust
+					click to set segment markers · drag chips to adjust
 				</span>
 			</div>
 			<ElevationChart
