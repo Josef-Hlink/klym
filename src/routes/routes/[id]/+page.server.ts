@@ -5,6 +5,7 @@ import {
 	listSegments,
 	readRoute,
 	segmentExists,
+	updateSegment,
 	writeSegment
 } from '$lib/server/storage.js';
 import { slugify } from '$lib/slug.js';
@@ -73,5 +74,33 @@ export const actions: Actions = {
 		const ok = await deleteSegment(params.id, segId);
 		if (!ok) return fail(404, { scope: 'delete', error: 'Segment not found' });
 		return { scope: 'delete', success: true, id: segId };
+	},
+
+	renameSegment: async ({ request, params }) => {
+		const form = await request.formData();
+		const segId = String(form.get('segId') ?? '').trim();
+		const name = String(form.get('name') ?? '').trim();
+		if (!segId) return fail(400, { scope: 'rename', error: 'Missing segment id' });
+		if (!name) return fail(400, { scope: 'rename', error: 'Name cannot be empty', segId });
+		const ok = await updateSegment(params.id, segId, { name });
+		if (!ok) return fail(404, { scope: 'rename', error: 'Segment not found', segId });
+		return { scope: 'rename', success: true, id: segId };
+	},
+
+	adjustSegment: async ({ request, params }) => {
+		const form = await request.formData();
+		const segId = String(form.get('segId') ?? '').trim();
+		const startDistM = Number(form.get('startDistM'));
+		const endDistM = Number(form.get('endDistM'));
+		if (!segId) return fail(400, { scope: 'adjust', error: 'Missing segment id' });
+		if (!Number.isFinite(startDistM) || !Number.isFinite(endDistM)) {
+			return fail(400, { scope: 'adjust', error: 'Invalid bounds', segId });
+		}
+		if (endDistM - startDistM < 10) {
+			return fail(400, { scope: 'adjust', error: 'Selection too short (min 10 m)', segId });
+		}
+		const ok = await updateSegment(params.id, segId, { startDistM, endDistM });
+		if (!ok) return fail(404, { scope: 'adjust', error: 'Segment not found', segId });
+		return { scope: 'adjust', success: true, id: segId };
 	}
 };

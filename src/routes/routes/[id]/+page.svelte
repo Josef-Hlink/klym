@@ -18,13 +18,27 @@
 	let savingMode = $state(false);
 	let saveName = $state('');
 	let saving = $state(false);
-	let deletingId = $state<string | null>(null);
+
+	let openSegMenuId = $state<string | null>(null);
+	let editingSegId = $state<string | null>(null);
+	let editingSegName = $state('');
+	let confirmingSegId = $state<string | null>(null);
+	let adjusting = $state<{
+		segId: string;
+		segName: string;
+		origA: number | null;
+		origB: number | null;
+	} | null>(null);
+	let segError = $state<string | null>(null);
 
 	// While a segment row is hovered, preview its A/B on the map + chart.
 	// Interactions (click/drag) are disabled during preview so the user
-	// doesn't accidentally edit their own markers.
+	// doesn't accidentally edit their own markers. Suppressed while
+	// adjusting since the markers are already loaded from the segment.
 	const hoveredSegment = $derived.by(() =>
-		hoveredSegmentId ? (segments.find((s) => s.id === hoveredSegmentId) ?? null) : null
+		hoveredSegmentId && !adjusting
+			? (segments.find((s) => s.id === hoveredSegmentId) ?? null)
+			: null
 	);
 	const displayMarkerA = $derived(hoveredSegment ? hoveredSegment.startDistM : markerA);
 	const displayMarkerB = $derived(hoveredSegment ? hoveredSegment.endDistM : markerB);
@@ -103,6 +117,70 @@
 		saveName = '';
 	}
 
+	function startSegRename(seg: { id: string; name: string }) {
+		editingSegName = seg.name;
+		editingSegId = seg.id;
+		openSegMenuId = null;
+		confirmingSegId = null;
+	}
+	function cancelSegRename() {
+		editingSegId = null;
+		editingSegName = '';
+	}
+	function startSegConfirmDelete(id: string) {
+		confirmingSegId = id;
+		openSegMenuId = null;
+		editingSegId = null;
+	}
+	function cancelSegConfirmDelete() {
+		confirmingSegId = null;
+	}
+	function startAdjust(seg: { id: string; name: string; startDistM: number; endDistM: number }) {
+		adjusting = {
+			segId: seg.id,
+			segName: seg.name,
+			origA: markerA,
+			origB: markerB
+		};
+		markerA = seg.startDistM;
+		markerB = seg.endDistM;
+		savingMode = false;
+		saveName = '';
+		openSegMenuId = null;
+		editingSegId = null;
+		confirmingSegId = null;
+		hoveredSegmentId = null;
+	}
+	function cancelAdjust() {
+		if (adjusting) {
+			markerA = adjusting.origA;
+			markerB = adjusting.origB;
+		}
+		adjusting = null;
+	}
+
+	$effect(() => {
+		if (openSegMenuId === null) return;
+		const handler = (e: MouseEvent) => {
+			const t = e.target as HTMLElement | null;
+			if (!t?.closest('[data-seg-menu]')) openSegMenuId = null;
+		};
+		document.addEventListener('mousedown', handler);
+		return () => document.removeEventListener('mousedown', handler);
+	});
+
+	$effect(() => {
+		const handler = (e: KeyboardEvent) => {
+			if (e.key !== 'Escape') return;
+			if (editingSegId !== null) cancelSegRename();
+			else if (confirmingSegId !== null) cancelSegConfirmDelete();
+			else if (openSegMenuId !== null) openSegMenuId = null;
+			else if (adjusting) cancelAdjust();
+		};
+		document.addEventListener('keydown', handler);
+		return () => document.removeEventListener('keydown', handler);
+	});
+
 	function fmtKm(m: number): string {
 		return `${(m / 1000).toFixed(2)} km`;
 	}
@@ -166,9 +244,13 @@
 		</div>
 
 		{#if cropStats}
-			<div class="rounded-lg border border-neutral-200 bg-white p-4">
+			<div class="rounded-lg border border-neutral-200 bg-white p-4 {adjusting ? 'ring-2 ring-amber-300' : ''}">
 				<h3 class="mb-3 text-sm font-medium uppercase tracking-wide text-neutral-500">
-					Selection
+					{#if adjusting}
+						Adjusting <span class="text-neutral-900">"{adjusting.segName}"</span>
+					{:else}
+						Selection
+					{/if}
 				</h3>
 				<dl class="grid grid-cols-1 gap-x-4 gap-y-4 text-sm sm:grid-cols-3">
 					<div>
@@ -221,23 +303,67 @@
 						</dd>
 					</div>
 					<div class="flex items-end justify-end gap-2">
-						<button
-							type="button"
-							onclick={resetMarkers}
-							class="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-100"
-						>
-							{@render iconRotateCcw()}
-							Reset
-						</button>
-						{#if !savingMode}
+						{#if adjusting}
 							<button
 								type="button"
-								onclick={openSave}
-								class="inline-flex items-center gap-1.5 rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700"
+								onclick={cancelAdjust}
+								class="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-100"
 							>
-								{@render iconSave()}
-								Save segment
+								Cancel
 							</button>
+							<form
+								method="POST"
+								action="?/adjustSegment"
+								use:enhance={() => {
+									saving = true;
+									segError = null;
+									return async ({ result, update }) => {
+										await update({ reset: false });
+										saving = false;
+										if (result.type === 'success') {
+											cancelAdjust();
+											await invalidateAll();
+										} else if (result.type === 'failure') {
+											segError =
+												(result.data &&
+													typeof result.data.error === 'string' &&
+													result.data.error) ||
+												'Adjust failed';
+										}
+									};
+								}}
+							>
+								<input type="hidden" name="segId" value={adjusting.segId} />
+								<input type="hidden" name="startDistM" value={crop?.startM ?? ''} />
+								<input type="hidden" name="endDistM" value={crop?.endM ?? ''} />
+								<button
+									type="submit"
+									disabled={saving || !crop}
+									class="inline-flex items-center gap-1.5 rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-50"
+								>
+									{@render iconSave()}
+									{saving ? 'Saving…' : 'Save changes'}
+								</button>
+							</form>
+						{:else}
+							<button
+								type="button"
+								onclick={resetMarkers}
+								class="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-100"
+							>
+								{@render iconRotateCcw()}
+								Reset
+							</button>
+							{#if !savingMode}
+								<button
+									type="button"
+									onclick={openSave}
+									class="inline-flex items-center gap-1.5 rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700"
+								>
+									{@render iconSave()}
+									Save segment
+								</button>
+							{/if}
 						{/if}
 					</div>
 				</dl>
@@ -320,6 +446,9 @@
 			<h3 class="px-4 pt-4 pb-2 text-sm font-medium uppercase tracking-wide text-neutral-500">
 				Segments ({segments.length})
 			</h3>
+			{#if segError}
+				<p class="mx-4 mb-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700">{segError}</p>
+			{/if}
 			{#if segments.length === 0}
 				<p class="px-4 pb-4 text-sm text-neutral-500">
 					No segments saved yet. Pick a crop with A and B, then hit “Save segment”.
@@ -328,65 +457,181 @@
 				<ul class="divide-y divide-neutral-200">
 					{#each segmentsWithStats as seg (seg.id)}
 						<li
-							class="flex items-center gap-4 px-4 py-3 transition-colors {hoveredSegmentId ===
+							class="flex items-center gap-3 px-4 py-3 transition-colors {hoveredSegmentId ===
 							seg.id
 								? 'bg-neutral-50'
-								: ''}"
-							onmouseenter={() => (hoveredSegmentId = seg.id)}
+								: ''} {adjusting?.segId === seg.id ? 'bg-amber-50' : ''}"
+							onmouseenter={() => {
+								if (!adjusting) hoveredSegmentId = seg.id;
+							}}
 							onmouseleave={() => {
 								if (hoveredSegmentId === seg.id) hoveredSegmentId = null;
 							}}
 						>
-							<a
-								href="/routes/{route.id}/segments/{seg.id}"
-								class="flex-1 text-left"
-							>
-								<div class="text-sm font-medium">{seg.name}</div>
-								<div class="text-xs text-neutral-500">
-									<code>{seg.id}</code> · {fmtKm(seg.startDistM)} → {fmtKm(seg.endDistM)}
-								</div>
-							</a>
-							<div class="flex items-center gap-5 text-sm tabular-nums">
-								<div class="text-right">
-									<div class="text-[10px] uppercase tracking-wide text-neutral-500">Length</div>
-									<div class="font-medium">{fmtKm(seg.stats.lengthM)}</div>
-								</div>
-								<div class="text-right">
-									<div class="text-[10px] uppercase tracking-wide text-neutral-500">Ascent</div>
-									<div class="font-medium">+{fmtM(seg.stats.totalAscentM)}</div>
-								</div>
-								<div class="text-right">
-									<div class="text-[10px] uppercase tracking-wide text-neutral-500">Avg</div>
-									<div class="flex items-center justify-end gap-1.5 font-medium">
-										<span
-											class="inline-block h-2.5 w-2.5 rounded"
-											style:background-color={gradeColor(seg.stats.avgGrade)}
-										></span>
-										{seg.stats.avgGrade.toFixed(1)}%
+							{#if editingSegId === seg.id}
+								<form
+									method="POST"
+									action="?/renameSegment"
+									use:enhance={() => {
+										segError = null;
+										return async ({ result, update }) => {
+											await update({ reset: false });
+											if (result.type === 'success') {
+												cancelSegRename();
+											} else if (result.type === 'failure') {
+												segError =
+													(result.data &&
+														typeof result.data.error === 'string' &&
+														result.data.error) ||
+													'Rename failed';
+											}
+										};
+									}}
+									class="flex flex-1 items-center gap-3"
+								>
+									<input type="hidden" name="segId" value={seg.id} />
+									<div class="flex-1">
+										<!-- svelte-ignore a11y_autofocus -->
+										<input
+											name="name"
+											type="text"
+											autocomplete="off"
+											bind:value={editingSegName}
+											autofocus
+											required
+											class="block w-full rounded-md border border-neutral-300 px-2 py-1 text-sm font-medium focus:border-neutral-900 focus:outline-none"
+										/>
+										<div class="mt-1 text-xs text-neutral-500">
+											<code>{seg.id}</code> · {fmtKm(seg.startDistM)} → {fmtKm(seg.endDistM)}
+										</div>
+									</div>
+									<div class="flex items-center gap-1">
+										<button
+											type="submit"
+											class="rounded-md bg-neutral-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-neutral-700"
+										>Save</button>
+										<button
+											type="button"
+											onclick={cancelSegRename}
+											class="rounded-md px-2.5 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-200"
+										>Cancel</button>
+									</div>
+								</form>
+							{:else}
+								<a href="/routes/{route.id}/segments/{seg.id}" class="flex-1 text-left">
+									<div class="flex items-center gap-2 text-sm font-medium">
+										{seg.name}
+										{#if adjusting?.segId === seg.id}
+											<span class="rounded bg-amber-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900">adjusting</span>
+										{/if}
+									</div>
+									<div class="text-xs text-neutral-500">
+										<code>{seg.id}</code> · {fmtKm(seg.startDistM)} → {fmtKm(seg.endDistM)}
+									</div>
+								</a>
+								<div class="flex items-center gap-5 text-sm tabular-nums">
+									<div class="text-right">
+										<div class="text-[10px] uppercase tracking-wide text-neutral-500">Length</div>
+										<div class="font-medium">{fmtKm(seg.stats.lengthM)}</div>
+									</div>
+									<div class="text-right">
+										<div class="text-[10px] uppercase tracking-wide text-neutral-500">Ascent</div>
+										<div class="font-medium">+{fmtM(seg.stats.totalAscentM)}</div>
+									</div>
+									<div class="text-right">
+										<div class="text-[10px] uppercase tracking-wide text-neutral-500">Avg</div>
+										<div class="flex items-center justify-end gap-1.5 font-medium">
+											<span
+												class="inline-block h-2.5 w-2.5 rounded"
+												style:background-color={gradeColor(seg.stats.avgGrade)}
+											></span>
+											{seg.stats.avgGrade.toFixed(1)}%
+										</div>
 									</div>
 								</div>
-							</div>
-							<form
-								method="POST"
-								action="?/deleteSegment"
-								use:enhance={() => {
-									deletingId = seg.id;
-									return async ({ update }) => {
-										await update({ reset: false });
-										deletingId = null;
-									};
-								}}
-							>
-								<input type="hidden" name="segId" value={seg.id} />
-								<button
-									type="submit"
-									disabled={deletingId === seg.id}
-									class="text-xs text-neutral-500 hover:text-red-600 disabled:opacity-50"
-									aria-label="Delete segment {seg.name}"
-								>
-									Delete
-								</button>
-							</form>
+								<div data-seg-menu class="relative flex items-center">
+									{#if confirmingSegId === seg.id}
+										<form
+											method="POST"
+											action="?/deleteSegment"
+											use:enhance={() => {
+												segError = null;
+												return async ({ result, update }) => {
+													await update({ reset: false });
+													if (result.type === 'success') {
+														cancelSegConfirmDelete();
+													} else if (result.type === 'failure') {
+														segError =
+															(result.data &&
+																typeof result.data.error === 'string' &&
+																result.data.error) ||
+															'Delete failed';
+													}
+												};
+											}}
+											class="flex items-center gap-1"
+										>
+											<input type="hidden" name="segId" value={seg.id} />
+											<button
+												type="submit"
+												class="rounded-md bg-red-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-700"
+											>Delete</button>
+											<button
+												type="button"
+												onclick={cancelSegConfirmDelete}
+												class="rounded-md px-2.5 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-200"
+											>Cancel</button>
+										</form>
+									{:else}
+										<button
+											type="button"
+											aria-label="Open segment menu"
+											aria-haspopup="menu"
+											aria-expanded={openSegMenuId === seg.id}
+											onclick={() =>
+												(openSegMenuId = openSegMenuId === seg.id ? null : seg.id)}
+											class="flex h-8 w-8 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900"
+										>
+											<svg
+												xmlns="http://www.w3.org/2000/svg"
+												viewBox="0 0 24 24"
+												fill="currentColor"
+												class="h-4 w-4"
+												aria-hidden="true"
+											>
+												<circle cx="12" cy="5" r="1.6" />
+												<circle cx="12" cy="12" r="1.6" />
+												<circle cx="12" cy="19" r="1.6" />
+											</svg>
+										</button>
+										{#if openSegMenuId === seg.id}
+											<div
+												role="menu"
+												class="absolute right-0 top-full z-10 mt-1 w-32 overflow-hidden rounded-md border border-neutral-200 bg-white shadow-lg"
+											>
+												<button
+													type="button"
+													role="menuitem"
+													onclick={() => startSegRename(seg)}
+													class="block w-full px-3 py-2 text-left text-xs text-neutral-700 hover:bg-neutral-50"
+												>Rename</button>
+												<button
+													type="button"
+													role="menuitem"
+													onclick={() => startAdjust(seg)}
+													class="block w-full px-3 py-2 text-left text-xs text-neutral-700 hover:bg-neutral-50"
+												>Adjust start/end</button>
+												<button
+													type="button"
+													role="menuitem"
+													onclick={() => startSegConfirmDelete(seg.id)}
+													class="block w-full px-3 py-2 text-left text-xs text-red-600 hover:bg-red-50"
+												>Delete</button>
+											</div>
+										{/if}
+									{/if}
+								</div>
+							{/if}
 						</li>
 					{/each}
 				</ul>

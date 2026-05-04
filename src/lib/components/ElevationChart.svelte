@@ -172,6 +172,28 @@
 	let dragMoved = false;
 	const DRAG_THRESHOLD_PX = 4;
 
+	let armedChip = $state<'A' | 'B' | null>(null);
+	const NUDGE_FINE_M = 5;
+	const NUDGE_COARSE_M = 50;
+
+	$effect(() => {
+		if (armedChip == null || !onMoveMarker) return;
+		const which = armedChip;
+		const handler = (e: KeyboardEvent) => {
+			if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+			const current = which === 'A' ? markerA : markerB;
+			if (current == null) return;
+			e.preventDefault();
+			const dir = e.key === 'ArrowLeft' ? -1 : 1;
+			const step = e.shiftKey ? NUDGE_COARSE_M : NUDGE_FINE_M;
+			const total = points[points.length - 1].cumDistM;
+			const next = Math.max(0, Math.min(total, current + dir * step));
+			onMoveMarker(which, next);
+		};
+		document.addEventListener('keydown', handler);
+		return () => document.removeEventListener('keydown', handler);
+	});
+
 	function handlePointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
 		if (!u || !onPlaceMarker) return;
@@ -255,14 +277,19 @@
 		></div>
 		<button
 			type="button"
-			aria-label="Marker A — drag to move, click to delete"
-			title="Drag to move · click to delete"
+			aria-label="Marker A — drag to move, hover and use ←/→ to nudge, click to delete"
+			title="Drag · hover + ←/→ nudge (Shift = ±50 m) · click to delete"
 			onpointerdown={(e) => onChipPointerDown(e, 'A')}
 			onpointermove={(e) => onChipPointerMove(e, 'A')}
 			onpointerup={(e) => onChipPointerUp(e, 'A')}
-			class="absolute z-20 flex h-5 w-7 -translate-x-1/2 items-center justify-center rounded-full bg-emerald-600 text-[11px] font-semibold leading-none text-white shadow-sm transition-colors hover:bg-emerald-700 {dragging === 'A'
-				? 'cursor-grabbing'
-				: 'cursor-grab'}"
+			onpointerenter={() => (armedChip = 'A')}
+			onpointerleave={() => {
+				if (armedChip === 'A') armedChip = null;
+			}}
+			class="absolute z-20 flex h-5 w-7 -translate-x-1/2 items-center justify-center rounded-full bg-emerald-600 text-[11px] font-semibold leading-none text-white shadow-sm transition-colors hover:bg-emerald-700 {armedChip ===
+			'A'
+				? 'ring-2 ring-emerald-300'
+				: ''} {dragging === 'A' ? 'cursor-grabbing' : 'cursor-grab'}"
 			style:left="{markerAPx}px"
 			style:top="{CHART_H - 8}px"
 		>
@@ -280,14 +307,19 @@
 		></div>
 		<button
 			type="button"
-			aria-label="Marker B — drag to move, click to delete"
-			title="Drag to move · click to delete"
+			aria-label="Marker B — drag to move, hover and use ←/→ to nudge, click to delete"
+			title="Drag · hover + ←/→ nudge (Shift = ±50 m) · click to delete"
 			onpointerdown={(e) => onChipPointerDown(e, 'B')}
 			onpointermove={(e) => onChipPointerMove(e, 'B')}
 			onpointerup={(e) => onChipPointerUp(e, 'B')}
-			class="absolute z-20 flex h-5 w-7 -translate-x-1/2 items-center justify-center rounded-full bg-red-600 text-[11px] font-semibold leading-none text-white shadow-sm transition-colors hover:bg-red-700 {dragging === 'B'
-				? 'cursor-grabbing'
-				: 'cursor-grab'}"
+			onpointerenter={() => (armedChip = 'B')}
+			onpointerleave={() => {
+				if (armedChip === 'B') armedChip = null;
+			}}
+			class="absolute z-20 flex h-5 w-7 -translate-x-1/2 items-center justify-center rounded-full bg-red-600 text-[11px] font-semibold leading-none text-white shadow-sm transition-colors hover:bg-red-700 {armedChip ===
+			'B'
+				? 'ring-2 ring-red-300'
+				: ''} {dragging === 'B' ? 'cursor-grabbing' : 'cursor-grab'}"
 			style:left="{markerBPx}px"
 			style:top="{CHART_H - 8}px"
 		>

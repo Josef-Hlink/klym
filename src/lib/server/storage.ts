@@ -116,6 +116,18 @@ export async function deleteSegment(routeId: string, segId: string): Promise<boo
 	}
 }
 
+export async function updateSegment(
+	routeId: string,
+	segId: string,
+	patch: Partial<Pick<SegmentData, 'name' | 'startDistM' | 'endDistM' | 'binSizeM'>>
+): Promise<boolean> {
+	const seg = await readSegment(routeId, segId);
+	if (!seg) return false;
+	const next: SegmentData = { ...seg, ...patch };
+	await writeFile(segmentFile(routeId, segId), JSON.stringify(next), 'utf8');
+	return true;
+}
+
 export async function listSegments(routeId: string): Promise<SegmentData[]> {
 	let files: string[];
 	try {
