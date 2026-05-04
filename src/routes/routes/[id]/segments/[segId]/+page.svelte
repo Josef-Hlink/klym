@@ -1,6 +1,6 @@
 <script lang="ts">
 	import SegmentProfile, { type GradeLabelMode } from '$lib/components/SegmentProfile.svelte';
-	import { computeCropStats, gradeColor } from '$lib/elevation.js';
+	import { computeAdaptiveBins, computeBins, computeCropStats, gradeColor } from '$lib/elevation.js';
 	import type { PageProps } from './$types.js';
 
 	let { data }: PageProps = $props();
@@ -12,6 +12,10 @@
 		binSizeM = segment.binSizeM;
 	});
 
+	type BinMode = 'fixed' | 'adaptive';
+	let binMode = $state<BinMode>('fixed');
+	let epsilonM = $state(5);
+
 	let labelMode = $state<GradeLabelMode>('percent');
 	const labelModeOptions: { value: GradeLabelMode; label: string }[] = [
 		{ value: 'percent', label: 'n%' },
@@ -19,9 +23,28 @@
 		{ value: 'off', label: 'off' }
 	];
 
-	const stats = $derived(
-		computeCropStats(route.points, segment.startDistM, segment.endDistM, binSizeM)
+	const adaptiveBins = $derived(
+		computeAdaptiveBins(route.points, segment.startDistM, segment.endDistM, epsilonM)
 	);
+	const fixedBins = $derived(
+		computeBins(route.points, segment.startDistM, segment.endDistM, binSizeM)
+	);
+	const activeBins = $derived(binMode === 'adaptive' ? adaptiveBins : fixedBins);
+
+	const stats = $derived.by(() => {
+		const base = computeCropStats(route.points, segment.startDistM, segment.endDistM, binSizeM);
+		if (binMode === 'fixed') return base;
+		let maxGrade = -Infinity;
+		let maxGradeBucket = base.maxGradeBucket;
+		for (const b of adaptiveBins) {
+			if (b.grade > maxGrade) {
+				maxGrade = b.grade;
+				maxGradeBucket = { startM: b.startM, endM: b.endM };
+			}
+		}
+		if (maxGrade === -Infinity) maxGrade = base.avgGrade;
+		return { ...base, maxGrade, maxGradeBucket };
+	});
 
 	let svgEl: SVGSVGElement | null = $state(null);
 	let exporting = $state(false);
@@ -251,7 +274,7 @@
 			</div>
 			<div>
 				<dt class="text-xs uppercase tracking-wide text-neutral-500">
-					Max {fmtBinLabel(binSizeM)}
+					{binMode === 'adaptive' ? 'Max section' : `Max ${fmtBinLabel(binSizeM)}`}
 				</dt>
 				<dd class="mt-1 flex items-center gap-2 text-lg font-medium">
 					<span
@@ -265,21 +288,63 @@
 	</div>
 
 	<div class="mb-4 flex flex-wrap items-center gap-x-6 gap-y-3 rounded-lg border border-neutral-200 bg-white px-4 py-3">
-		<div class="flex flex-1 items-center gap-3 min-w-64">
-			<label for="bin-size" class="text-xs font-medium uppercase tracking-wide text-neutral-500">
-				Bin size
-			</label>
-			<input
-				id="bin-size"
-				type="range"
-				min="100"
-				max="1000"
-				step="50"
-				bind:value={binSizeM}
-				class="flex-1 accent-neutral-900"
-			/>
-			<span class="w-16 text-right text-sm tabular-nums">{fmtBinLabel(binSizeM)}</span>
+		<div class="flex items-center gap-2">
+			<span class="text-xs font-medium uppercase tracking-wide text-neutral-500">Sections</span>
+			<div class="inline-flex overflow-hidden rounded-md border border-neutral-300 text-xs">
+				<button
+					type="button"
+					onclick={() => (binMode = 'fixed')}
+					class="px-2.5 py-1 font-medium transition-colors {binMode === 'fixed'
+						? 'bg-neutral-900 text-white'
+						: 'bg-white text-neutral-600 hover:bg-neutral-100'}"
+				>
+					Fixed
+				</button>
+				<button
+					type="button"
+					onclick={() => (binMode = 'adaptive')}
+					class="border-l border-neutral-300 px-2.5 py-1 font-medium transition-colors {binMode ===
+					'adaptive'
+						? 'bg-neutral-900 text-white'
+						: 'bg-white text-neutral-600 hover:bg-neutral-100'}"
+				>
+					Adaptive
+				</button>
+			</div>
 		</div>
+		{#if binMode === 'fixed'}
+			<div class="flex flex-1 items-center gap-3 min-w-64">
+				<label for="bin-size" class="text-xs font-medium uppercase tracking-wide text-neutral-500">
+					Section length
+				</label>
+				<input
+					id="bin-size"
+					type="range"
+					min="100"
+					max="1000"
+					step="50"
+					bind:value={binSizeM}
+					class="flex-1 accent-neutral-900"
+				/>
+				<span class="w-20 text-right text-sm tabular-nums">{fmtBinLabel(binSizeM)}</span>
+			</div>
+		{:else}
+			<div class="flex flex-1 items-center gap-3 min-w-64">
+				<label for="epsilon" class="text-xs font-medium uppercase tracking-wide text-neutral-500">
+					Tolerance
+				</label>
+				<input
+					id="epsilon"
+					type="range"
+					min="1"
+					max="25"
+					step="1"
+					bind:value={epsilonM}
+					class="flex-1 accent-neutral-900"
+				/>
+				<span class="min-w-32 whitespace-nowrap text-right text-sm tabular-nums">±{epsilonM} m · {activeBins.length} sections</span>
+			</div>
+		{/if}
 		<div class="flex items-center gap-2">
 			<span class="text-xs font-medium uppercase tracking-wide text-neutral-500">Labels</span>
 			<div class="inline-flex overflow-hidden rounded-md border border-neutral-300 text-xs">
@@ -307,6 +372,7 @@
 			startDistM={segment.startDistM}
 			endDistM={segment.endDistM}
 			{binSizeM}
+			bins={activeBins}
 			{labelMode}
 			title="klym"
 			subtitle="{segment.name} — {route.name}"

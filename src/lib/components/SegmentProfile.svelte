@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { computeBins, findPointAtDistance, gradeColor } from '$lib/elevation.js';
+	import { computeBins, findPointAtDistance, gradeColor, type GradeBin } from '$lib/elevation.js';
 	import type { RoutePoint } from '$lib/types.js';
 
 	export type GradeLabelMode = 'percent' | 'number' | 'off';
@@ -9,6 +9,7 @@
 		startDistM: number;
 		endDistM: number;
 		binSizeM?: number;
+		bins?: GradeBin[];
 		title?: string;
 		subtitle?: string;
 		labelMode?: GradeLabelMode;
@@ -19,6 +20,7 @@
 		startDistM,
 		endDistM,
 		binSizeM = 500,
+		bins: binsProp,
 		title = 'klym',
 		subtitle = '',
 		labelMode = 'percent',
@@ -51,7 +53,7 @@
 		return out;
 	});
 
-	const bins = $derived(computeBins(points, startDistM, endDistM, binSizeM));
+	const bins = $derived(binsProp ?? computeBins(points, startDistM, endDistM, binSizeM));
 
 	const yRange = $derived.by(() => {
 		if (slicedPoints.length === 0) return { min: 0, max: 100 };
@@ -166,7 +168,25 @@
 
 	const endEle = $derived(slicedPoints[slicedPoints.length - 1]?.ele ?? 0);
 	const startEle = $derived(slicedPoints[0]?.ele ?? 0);
+
+	let wrapperEl: HTMLDivElement | null = $state(null);
+	let wrapperW = $state(0);
+	let tooltipW = $state(0);
+	let hover = $state<{ idx: number; x: number; y: number } | null>(null);
+	$effect(() => {
+		// Drop stale hover when bins regenerate (e.g. dragging the ε slider).
+		bins;
+		hover = null;
+	});
+
+	function updateHover(e: PointerEvent, idx: number) {
+		if (!wrapperEl) return;
+		const r = wrapperEl.getBoundingClientRect();
+		hover = { idx, x: e.clientX - r.left, y: e.clientY - r.top };
+	}
 </script>
+
+<div bind:this={wrapperEl} bind:clientWidth={wrapperW} class="relative">
 
 <svg
 	bind:this={svgEl}
@@ -302,4 +322,65 @@
 			text-anchor="start">{Math.round(endEle)}m</text
 		>
 	{/if}
+
+	{#if hover && binAreas[hover.idx]}
+		<path
+			d={binAreas[hover.idx].path}
+			fill="#ffffff"
+			fill-opacity="0.18"
+			pointer-events="none"
+		/>
+	{/if}
+
+	{#each bins as bin, i (bin.startM)}
+		{@const hx = xScale(bin.startM)}
+		{@const hw = Math.max(0.5, xScale(bin.endM) - hx)}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<rect
+			x={hx}
+			y={M.top}
+			width={hw}
+			height={plotH}
+			fill="transparent"
+			pointer-events="all"
+			onpointerenter={(e) => updateHover(e, i)}
+			onpointermove={(e) => updateHover(e, i)}
+			onpointerleave={() => {
+				if (hover?.idx === i) hover = null;
+			}}
+		/>
+	{/each}
 </svg>
+
+{#if hover && bins[hover.idx]}
+	{@const bin = bins[hover.idx]}
+	{@const aKm = (bin.startM - startDistM) / 1000}
+	{@const bKm = (bin.endM - startDistM) / 1000}
+	{@const lenM = Math.round(bin.endM - bin.startM)}
+	{@const gainM = Math.round(bin.endEle - bin.startEle)}
+	{@const half = tooltipW / 2}
+	{@const xClamped =
+		wrapperW > 0 && tooltipW > 0
+			? Math.max(half + 4, Math.min(wrapperW - half - 4, hover.x))
+			: hover.x}
+	<div
+		bind:clientWidth={tooltipW}
+		class="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-neutral-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-lg"
+		style:left="{xClamped}px"
+		style:top="{hover.y - 12}px"
+	>
+		<div class="tabular-nums">
+			{lenM} m <span class="text-neutral-400">({aKm.toFixed(1)} → {bKm.toFixed(1)} km)</span>
+		</div>
+		<div class="mt-0.5 flex items-center gap-1.5">
+			<span
+				class="inline-block h-2 w-2 rounded-full"
+				style:background-color={gradeColor(bin.grade)}
+			></span>
+			<span class="tabular-nums">
+				{bin.grade.toFixed(1)}% <span class="text-neutral-400">({gainM >= 0 ? '+' : ''}{gainM} m)</span>
+			</span>
+		</div>
+	</div>
+{/if}
+</div>

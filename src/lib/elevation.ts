@@ -199,13 +199,99 @@ export function computeBins(
 	return bins;
 }
 
+// Vertical-deviation Douglas-Peucker. For elevation profiles the natural
+// distance metric is |Δelevation|, not 2D perpendicular distance — distance
+// and elevation live on totally different scales (10s of km vs 100s of m),
+// so a true perpendicular-distance RDP would be dominated by the long axis.
+// Returned `keep[i]` is true iff the i-th point survives simplification.
+function rdpVertical(
+	pts: { dist: number; ele: number }[],
+	epsilonM: number
+): boolean[] {
+	const n = pts.length;
+	const keep: boolean[] = new Array(n).fill(false);
+	if (n === 0) return keep;
+	keep[0] = true;
+	keep[n - 1] = true;
+	if (n < 3) return keep;
+
+	const stack: [number, number][] = [[0, n - 1]];
+	while (stack.length > 0) {
+		const [i, j] = stack.pop()!;
+		if (j - i < 2) continue;
+		const a = pts[i];
+		const b = pts[j];
+		const dx = b.dist - a.dist;
+		let maxDev = 0;
+		let maxK = -1;
+		for (let k = i + 1; k < j; k++) {
+			const t = dx > 0 ? (pts[k].dist - a.dist) / dx : 0;
+			const lineEle = a.ele + (b.ele - a.ele) * t;
+			const dev = Math.abs(pts[k].ele - lineEle);
+			if (dev > maxDev) {
+				maxDev = dev;
+				maxK = k;
+			}
+		}
+		if (maxDev > epsilonM && maxK !== -1) {
+			keep[maxK] = true;
+			stack.push([i, maxK]);
+			stack.push([maxK, j]);
+		}
+	}
+	return keep;
+}
+
+export function computeAdaptiveBins(
+	points: RoutePoint[],
+	startM: number,
+	endM: number,
+	epsilonM: number
+): GradeBin[] {
+	if (points.length < 2 || endM <= startM) return [];
+	const a = findPointAtDistance(points, startM);
+	const b = findPointAtDistance(points, endM);
+	const sliced: { dist: number; ele: number }[] = [{ dist: a.cumDistM, ele: a.ele }];
+	for (const p of points) {
+		if (p.cumDistM <= a.cumDistM) continue;
+		if (p.cumDistM >= b.cumDistM) break;
+		sliced.push({ dist: p.cumDistM, ele: p.ele });
+	}
+	sliced.push({ dist: b.cumDistM, ele: b.ele });
+
+	const keep = rdpVertical(sliced, epsilonM);
+	const bins: GradeBin[] = [];
+	let prev: { dist: number; ele: number } | null = null;
+	for (let i = 0; i < sliced.length; i++) {
+		if (!keep[i]) continue;
+		const cur = sliced[i];
+		if (prev) {
+			const run = cur.dist - prev.dist;
+			if (run > 0) {
+				bins.push({
+					startM: prev.dist,
+					endM: cur.dist,
+					startEle: prev.ele,
+					endEle: cur.ele,
+					grade: ((cur.ele - prev.ele) / run) * 100
+				});
+			}
+		}
+		prev = cur;
+	}
+	return bins;
+}
+
+// Cutoffs sit at half-integers so a grade that *rounds* to N falls in the same
+// bucket as the integer label "N%". Without this, e.g. -0.95 displays as "-1%"
+// but with `< -1` falls through to yellow, mismatching the slate-for-descent rule.
 export function gradeColor(grade: number): string {
-	if (grade < -1) return '#64748b';
-	if (grade < 1) return '#eab308';
-	if (grade < 3) return '#f59e0b';
-	if (grade < 5) return '#f97316';
-	if (grade < 7) return '#ea580c';
-	if (grade < 9) return '#dc2626';
-	if (grade < 12) return '#b91c1c';
+	if (grade < -0.5) return '#64748b';
+	if (grade < 0.5) return '#eab308';
+	if (grade < 2.5) return '#f59e0b';
+	if (grade < 4.5) return '#f97316';
+	if (grade < 6.5) return '#ea580c';
+	if (grade < 8.5) return '#dc2626';
+	if (grade < 11.5) return '#b91c1c';
 	return '#7f1d1d';
 }
