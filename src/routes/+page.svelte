@@ -9,6 +9,52 @@
 	let selectedFile = $state<File | null>(null);
 	let fileInput: HTMLInputElement | null = $state(null);
 
+	let openMenuId = $state<string | null>(null);
+	let editingId = $state<string | null>(null);
+	let editingName = $state('');
+	let confirmingId = $state<string | null>(null);
+	let rowError = $state<string | null>(null);
+
+	function startRename(id: string, currentName: string) {
+		editingName = currentName;
+		editingId = id;
+		openMenuId = null;
+		confirmingId = null;
+	}
+	function cancelRename() {
+		editingId = null;
+		editingName = '';
+	}
+	function startConfirmDelete(id: string) {
+		confirmingId = id;
+		openMenuId = null;
+		editingId = null;
+	}
+	function cancelDelete() {
+		confirmingId = null;
+	}
+
+	$effect(() => {
+		if (openMenuId === null) return;
+		const handler = (e: MouseEvent) => {
+			const t = e.target as HTMLElement | null;
+			if (!t?.closest('[data-row-menu]')) openMenuId = null;
+		};
+		document.addEventListener('mousedown', handler);
+		return () => document.removeEventListener('mousedown', handler);
+	});
+
+	$effect(() => {
+		const handler = (e: KeyboardEvent) => {
+			if (e.key !== 'Escape') return;
+			if (editingId !== null) cancelRename();
+			else if (confirmingId !== null) cancelDelete();
+			else if (openMenuId !== null) openMenuId = null;
+		};
+		document.addEventListener('keydown', handler);
+		return () => document.removeEventListener('keydown', handler);
+	});
+
 	function acceptsFile(f: File): boolean {
 		return (
 			f.name.toLowerCase().endsWith('.gpx') ||
@@ -109,8 +155,9 @@
 					id="name"
 					name="name"
 					type="text"
+					autocomplete="off"
 					placeholder="e.g. Alpe d'Huez loop"
-					value={form && 'name' in form ? (form.name ?? '') : ''}
+					value={form && form.scope === 'upload' && 'name' in form ? (form.name ?? '') : ''}
 					class="mt-1 block w-full rounded-md border border-neutral-300 px-3 py-2 text-sm focus:border-neutral-900 focus:outline-none"
 				/>
 				<p class="mt-1 text-xs text-neutral-500">
@@ -197,7 +244,7 @@
 				/>
 			</div>
 
-			{#if form && 'error' in form && form.error}
+			{#if form && form.scope === 'upload' && 'error' in form && form.error}
 				<p class="rounded bg-red-50 px-3 py-2 text-sm text-red-700">
 					{form.error}
 				</p>
@@ -222,24 +269,159 @@
 				No routes yet. Upload one above to get started.
 			</p>
 		{:else}
+			{#if rowError}
+				<p class="mb-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700">{rowError}</p>
+			{/if}
 			<ul class="divide-y divide-neutral-200 rounded-lg border border-neutral-200 bg-white">
 				{#each data.routes as route (route.id)}
-					<li>
-						<a
-							href="/routes/{route.id}"
-							class="flex items-center justify-between gap-4 px-5 py-4 hover:bg-neutral-50"
-						>
-							<div>
-								<div class="font-medium">{route.name}</div>
-								<div class="text-xs text-neutral-500">
-									<code>{route.id}</code> · {route.pointCount} pts · added {fmtDate(route.createdAt)}
+					<li class="flex items-center hover:bg-neutral-50">
+						{#if editingId === route.id}
+							<form
+								method="POST"
+								action="?/renameRoute"
+								use:enhance={() => {
+									rowError = null;
+									return async ({ result, update }) => {
+										await update();
+										if (result.type === 'success') {
+											editingId = null;
+											editingName = '';
+										} else if (result.type === 'failure') {
+											rowError =
+												(result.data &&
+													typeof result.data.error === 'string' &&
+													result.data.error) ||
+												'Rename failed';
+										}
+									};
+								}}
+								class="flex flex-1 items-center gap-3 px-5 py-3"
+							>
+								<input type="hidden" name="id" value={route.id} />
+								<div class="flex-1">
+									<!-- svelte-ignore a11y_autofocus -->
+									<input
+										name="name"
+										type="text"
+										autocomplete="off"
+										bind:value={editingName}
+										autofocus
+										required
+										class="block w-full rounded-md border border-neutral-300 px-2 py-1 text-sm font-medium focus:border-neutral-900 focus:outline-none"
+									/>
+									<div class="mt-1 text-xs text-neutral-500">
+										<code>{route.id}</code> · {route.pointCount} pts · added {fmtDate(route.createdAt)}
+									</div>
 								</div>
+								<div class="text-right text-sm text-neutral-600">
+									<div>{fmtKm(route.totalDistM)}</div>
+									<div class="text-xs text-neutral-500">+{fmtM(route.totalAscentM)}</div>
+								</div>
+								<div class="flex items-center gap-1">
+									<button
+										type="submit"
+										class="rounded-md bg-neutral-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-neutral-700"
+									>Save</button>
+									<button
+										type="button"
+										onclick={cancelRename}
+										class="rounded-md px-2.5 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-200"
+									>Cancel</button>
+								</div>
+							</form>
+						{:else}
+							<a
+								href="/routes/{route.id}"
+								class="flex flex-1 items-center justify-between gap-4 px-5 py-4"
+							>
+								<div>
+									<div class="font-medium">{route.name}</div>
+									<div class="text-xs text-neutral-500">
+										<code>{route.id}</code> · {route.pointCount} pts · added {fmtDate(route.createdAt)}
+									</div>
+								</div>
+								<div class="text-right text-sm text-neutral-600">
+									<div>{fmtKm(route.totalDistM)}</div>
+									<div class="text-xs text-neutral-500">+{fmtM(route.totalAscentM)}</div>
+								</div>
+							</a>
+							<div data-row-menu class="relative flex items-center pr-3">
+								{#if confirmingId === route.id}
+									<form
+										method="POST"
+										action="?/deleteRoute"
+										use:enhance={() => {
+											rowError = null;
+											return async ({ result, update }) => {
+												await update();
+												if (result.type === 'success') {
+													confirmingId = null;
+												} else if (result.type === 'failure') {
+													rowError =
+														(result.data &&
+															typeof result.data.error === 'string' &&
+															result.data.error) ||
+														'Delete failed';
+												}
+											};
+										}}
+										class="flex items-center gap-1"
+									>
+										<input type="hidden" name="id" value={route.id} />
+										<button
+											type="submit"
+											class="rounded-md bg-red-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-700"
+										>Delete</button>
+										<button
+											type="button"
+											onclick={cancelDelete}
+											class="rounded-md px-2.5 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-200"
+										>Cancel</button>
+									</form>
+								{:else}
+									<button
+										type="button"
+										aria-label="Open route menu"
+										aria-haspopup="menu"
+										aria-expanded={openMenuId === route.id}
+										onclick={() =>
+											(openMenuId = openMenuId === route.id ? null : route.id)}
+										class="flex h-8 w-8 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900"
+									>
+										<svg
+											xmlns="http://www.w3.org/2000/svg"
+											viewBox="0 0 24 24"
+											fill="currentColor"
+											class="h-4 w-4"
+											aria-hidden="true"
+										>
+											<circle cx="12" cy="5" r="1.6" />
+											<circle cx="12" cy="12" r="1.6" />
+											<circle cx="12" cy="19" r="1.6" />
+										</svg>
+									</button>
+									{#if openMenuId === route.id}
+										<div
+											role="menu"
+											class="absolute right-2 top-full z-10 mt-1 w-32 overflow-hidden rounded-md border border-neutral-200 bg-white shadow-lg"
+										>
+											<button
+												type="button"
+												role="menuitem"
+												onclick={() => startRename(route.id, route.name)}
+												class="block w-full px-3 py-2 text-left text-xs text-neutral-700 hover:bg-neutral-50"
+											>Rename</button>
+											<button
+												type="button"
+												role="menuitem"
+												onclick={() => startConfirmDelete(route.id)}
+												class="block w-full px-3 py-2 text-left text-xs text-red-600 hover:bg-red-50"
+											>Delete</button>
+										</div>
+									{/if}
+								{/if}
 							</div>
-							<div class="text-right text-sm text-neutral-600">
-								<div>{fmtKm(route.totalDistM)}</div>
-								<div class="text-xs text-neutral-500">+{fmtM(route.totalAscentM)}</div>
-							</div>
-						</a>
+						{/if}
 					</li>
 				{/each}
 			</ul>

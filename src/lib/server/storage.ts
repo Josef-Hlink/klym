@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile, stat, unlink } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile, stat, unlink, rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { RouteData, RouteSummary, SegmentData } from '$lib/types.js';
 
@@ -34,6 +34,23 @@ export async function writeRoute(
 	await mkdir(dir, { recursive: true });
 	await writeFile(path.join(dir, 'route.gpx'), gpxText, 'utf8');
 	await writeFile(path.join(dir, 'route.json'), JSON.stringify(route), 'utf8');
+}
+
+export async function deleteRoute(id: string): Promise<boolean> {
+	try {
+		await rm(routeDir(id), { recursive: true, force: true });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export async function updateRouteName(id: string, name: string): Promise<boolean> {
+	const route = await readRoute(id);
+	if (!route) return false;
+	route.name = name;
+	await writeFile(path.join(routeDir(id), 'route.json'), JSON.stringify(route), 'utf8');
+	return true;
 }
 
 export async function readRoute(id: string): Promise<RouteData | null> {
