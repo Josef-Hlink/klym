@@ -109,13 +109,12 @@
 					id="name"
 					name="name"
 					type="text"
-					required
 					placeholder="e.g. Alpe d'Huez loop"
 					value={form && 'name' in form ? (form.name ?? '') : ''}
 					class="mt-1 block w-full rounded-md border border-neutral-300 px-3 py-2 text-sm focus:border-neutral-900 focus:outline-none"
 				/>
 				<p class="mt-1 text-xs text-neutral-500">
-					Will be slugified into a unique id (e.g. <code>alpe-d-huez-loop</code>).
+					Slugified into the route id (e.g. <code>alpe-d-huez-loop</code>). Leave blank to use the file name.
 				</p>
 			</div>
 

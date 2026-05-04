@@ -14,27 +14,28 @@ export const load: PageServerLoad = async () => {
 export const actions: Actions = {
 	upload: async ({ request }) => {
 		const form = await request.formData();
-		const name = String(form.get('name') ?? '').trim();
+		const rawName = String(form.get('name') ?? '').trim();
 		const file = form.get('file');
 
-		if (!name) return fail(400, { error: 'Name is required', name: '' });
+		if (!(file instanceof File) || file.size === 0) {
+			return fail(400, { error: 'GPX file is required', name: rawName });
+		}
+		if (file.size > MAX_GPX_BYTES) {
+			return fail(400, { error: 'GPX file is too large (max 15 MB)', name: rawName });
+		}
+
+		const name = rawName || file.name.replace(/\.gpx$/i, '').trim();
 		const id = slugify(name);
 		if (!id) {
 			return fail(400, {
 				error: 'Name must contain letters or numbers',
-				name
+				name: rawName
 			});
-		}
-		if (!(file instanceof File) || file.size === 0) {
-			return fail(400, { error: 'GPX file is required', name });
-		}
-		if (file.size > MAX_GPX_BYTES) {
-			return fail(400, { error: 'GPX file is too large (max 15 MB)', name });
 		}
 		if (await routeExists(id)) {
 			return fail(409, {
 				error: `A route with id "${id}" already exists`,
-				name
+				name: rawName
 			});
 		}
 
