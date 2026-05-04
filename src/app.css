@@ -1,1 +1,7 @@
 @import 'tailwindcss';
+
+/* Reserve scrollbar gutter so panels appearing/disappearing don't reflow
+   the page horizontally as the scrollbar comes and goes. */
+html {
+	scrollbar-gutter: stable;
+}
