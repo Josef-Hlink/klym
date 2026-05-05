@@ -119,6 +119,7 @@
 			path: string;
 			xCenter: number;
 			yCenterCurve: number;
+			yPeak: number;
 			width: number;
 			grade: number;
 			startM: number;
@@ -139,9 +140,11 @@
 			const xL = xScale(bin.startM);
 			const xR = xScale(bin.endM);
 			const parts: string[] = [`M${xL.toFixed(1)},${yBot.toFixed(1)}`];
+			let yPeak = Infinity; // smallest y == highest point in viewBox space
 			for (const p of binPoints) {
 				const x = xScale(p.dist);
 				const y = yScale(p.ele);
+				if (y < yPeak) yPeak = y;
 				parts.push(`L${x.toFixed(1)},${y.toFixed(1)}`);
 			}
 			parts.push(`L${xR.toFixed(1)},${yBot.toFixed(1)} Z`);
@@ -153,6 +156,7 @@
 				path: parts.join(' '),
 				xCenter: (xL + xR) / 2,
 				yCenterCurve: yScale(midPt.ele),
+				yPeak,
 				width: xR - xL,
 				grade: bin.grade,
 				startM: bin.startM,
@@ -185,6 +189,7 @@
 	let wrapperEl: HTMLDivElement | null = $state(null);
 	let wrapperW = $state(0);
 	let tooltipW = $state(0);
+	let tooltipH = $state(0);
 	let hover = $state<{ idx: number; x: number; y: number } | null>(null);
 	$effect(() => {
 		// Drop stale hover when bins regenerate (e.g. dragging the ε slider).
@@ -428,17 +433,19 @@
 	{@const gainM = Math.round(bin.endEle - bin.startEle)}
 	{@const cssScale = wrapperW > 0 ? wrapperW / W : 1}
 	{@const xRaw = area.xCenter * cssScale}
-	{@const yRaw = M.top * cssScale}
+	{@const yRaw = area.yPeak * cssScale}
 	{@const half = tooltipW / 2}
 	{@const xClamped =
 		wrapperW > 0 && tooltipW > 0
 			? Math.max(half + 4, Math.min(wrapperW - half - 4, xRaw))
 			: xRaw}
+	{@const yClamped = tooltipH > 0 ? Math.max(tooltipH + 4, yRaw - 8) : yRaw - 8}
 	<div
 		bind:clientWidth={tooltipW}
+		bind:clientHeight={tooltipH}
 		class="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-neutral-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-lg"
 		style:left="{xClamped}px"
-		style:top="{yRaw - 8}px"
+		style:top="{yClamped}px"
 	>
 		<div class="tabular-nums">
 			{lenM} m <span class="text-neutral-400">({aKm.toFixed(1)} → {bKm.toFixed(1)} km)</span>
