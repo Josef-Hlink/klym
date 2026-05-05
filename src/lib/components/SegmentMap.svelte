@@ -36,8 +36,31 @@
 	const HOVER_GRADE_WINDOW_M = 50;
 	const TILE_SIZE = 256;
 	const TILE_BBOX_PAD = 0.1; // 10% lat/lon padding around the route bbox
-	const TILE_MAX_TILES_PER_AXIS = 6;
-	const TILE_URL_TEMPLATE = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+	const TILE_MAX_TILES_PER_AXIS = 10;
+	type MapSource = 'osm' | 'topo' | 'sat';
+	const TILE_SOURCES: Record<
+		MapSource,
+		{ url: string; subdomains: string[] | null; maxZoom: number; label: string }
+	> = {
+		osm: {
+			url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+			subdomains: null,
+			maxZoom: 19,
+			label: 'Default'
+		},
+		topo: {
+			url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+			subdomains: ['a', 'b', 'c'],
+			maxZoom: 17,
+			label: 'Topographical'
+		},
+		sat: {
+			url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+			subdomains: null,
+			maxZoom: 19,
+			label: 'Satellite'
+		}
+	};
 	const TILE_FADE_START = Math.PI / 4;
 	const TILE_FADE_END = Math.PI / 2 - 0.05;
 	const BLOCK_DEPTH_M = 100; // metres of "earth" the ground sits on
@@ -117,6 +140,25 @@
 	let showMap = $state(true);
 	let showAnchorLines = $state(true);
 	let showAllDrapes = $state(false);
+	let mapSource = $state<MapSource>('osm');
+	const SOURCES: MapSource[] = ['osm', 'topo', 'sat'];
+
+	let showMapMenu = $state(false);
+	let mapMenuHideTimer: ReturnType<typeof setTimeout> | null = null;
+	function openMapMenu() {
+		if (mapMenuHideTimer) {
+			clearTimeout(mapMenuHideTimer);
+			mapMenuHideTimer = null;
+		}
+		showMapMenu = true;
+	}
+	function closeMapMenu() {
+		if (mapMenuHideTimer) clearTimeout(mapMenuHideTimer);
+		mapMenuHideTimer = setTimeout(() => {
+			showMapMenu = false;
+			mapMenuHideTimer = null;
+		}, 120);
+	}
 
 	let showVertPopover = $state(false);
 	let vertHideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -274,14 +316,12 @@
 		return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
 	}
 
-	function pickTileZoom(bbox: {
-		minLat: number;
-		maxLat: number;
-		minLon: number;
-		maxLon: number;
-	}): number {
+	function pickTileZoom(
+		bbox: { minLat: number; maxLat: number; minLon: number; maxLon: number },
+		maxZoom: number
+	): number {
 		// Highest zoom that keeps the tile grid <= TILE_MAX_TILES_PER_AXIS.
-		for (let z = 18; z >= 1; z--) {
+		for (let z = maxZoom; z >= 1; z--) {
 			const xRange = lonToTileX(bbox.maxLon, z) - lonToTileX(bbox.minLon, z);
 			const yRange = latToTileY(bbox.minLat, z) - latToTileY(bbox.maxLat, z);
 			if (xRange <= TILE_MAX_TILES_PER_AXIS && yRange <= TILE_MAX_TILES_PER_AXIS) {
@@ -301,7 +341,9 @@
 
 	async function buildTileImage(
 		bbox: { minLat: number; maxLat: number; minLon: number; maxLon: number },
-		zoom: number
+		zoom: number,
+		urlTemplate: string,
+		subdomains: string[] | null
 	): Promise<TileImage | null> {
 		const xMin = Math.floor(lonToTileX(bbox.minLon, zoom));
 		const xMax = Math.ceil(lonToTileX(bbox.maxLon, zoom));
@@ -323,7 +365,13 @@
 		const loads: Promise<void>[] = [];
 		for (let x = xMin; x < xMax; x++) {
 			for (let y = yMin; y < yMax; y++) {
-				const url = TILE_URL_TEMPLATE.replace('{z}', String(zoom))
+				let url = urlTemplate;
+				if (subdomains && subdomains.length) {
+					const sub = subdomains[Math.abs(x + y) % subdomains.length];
+					url = url.replace('{s}', sub);
+				}
+				url = url
+					.replace('{z}', String(zoom))
 					.replace('{x}', String(x))
 					.replace('{y}', String(y));
 				const img = new Image();
@@ -414,9 +462,10 @@
 			minLon: minLon - lonPad,
 			maxLon: maxLon + lonPad
 		};
-		const zoom = pickTileZoom(padded);
+		const source = TILE_SOURCES[mapSource];
+		const zoom = pickTileZoom(padded, source.maxZoom);
 		let cancelled = false;
-		buildTileImage(padded, zoom)
+		buildTileImage(padded, zoom, source.url, source.subdomains)
 			.then((result) => {
 				if (cancelled) return;
 				tileImage = result;
@@ -914,6 +963,7 @@
 		document.removeEventListener('pointermove', onResizeMove);
 		document.removeEventListener('pointerup', onResizeUp);
 		if (vertHideTimer) clearTimeout(vertHideTimer);
+		if (mapMenuHideTimer) clearTimeout(mapMenuHideTimer);
 		cancelToggleAnim();
 		document.body.style.cursor = '';
 	});
@@ -1114,34 +1164,82 @@
 		</button>
 	{/if}
 
+	{#snippet sourceIcon(source: MapSource)}
+		<svg
+			viewBox="0 0 24 24"
+			class="h-4 w-4"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="1.8"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+		>
+			{#if source === 'osm'}
+				<path d="M 3 5 L 9 2 L 15 5 L 21 2 L 21 17 L 15 20 L 9 17 L 3 20 Z" />
+				<path d="M 9 2 L 9 17" />
+				<path d="M 15 5 L 15 20" />
+			{:else if source === 'topo'}
+				<path d="M 16 3 Q 16 5 17.5 6 Q 18 7.5 21 8" />
+				<path d="M 12 3 Q 11.5 6 14 8 Q 17 9.5 21 12" />
+				<path d="M 8 3 Q 8 7 12 10 Q 16.5 13 21 16" />
+				<path d="M 4 4 Q 2 8 7 10 Q 9 12 11 14 Q 15 16 17 18 Q 19 19 21 20" />
+				<path d="M 3 13 Q 3 15 4 16 Q 6 17 8 18 Q 11 19 14 20" />
+			{:else}
+				<g transform="rotate(-45 8 8)">
+					<rect x="2" y="7" width="6" height="6" rx="1.5" />
+					<rect x="8" y="4" width="4" height="12" rx="1" />
+					<rect x="12" y="7" width="6" height="6" rx="1.5" />
+				</g>
+				<path d="M 17 12 a 3 3 0 0 1 -3 3" />
+				<path d="M 20 12 a 6 6 0 0 1 -6 6" />
+				<path d="M 23 12 a 9 9 0 0 1 -9 9" />
+			{/if}
+		</svg>
+	{/snippet}
+
 	<div
 		onpointerdown={(e) => e.stopPropagation()}
 		class="absolute bottom-2 left-2 z-30 flex items-center gap-0.5 rounded-md bg-white/90 px-1 py-0.5 shadow-sm"
 	>
-		<button
-			type="button"
-			onclick={() => (showMap = !showMap)}
-			class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 {showMap
-				? 'text-neutral-800'
-				: 'text-neutral-300'}"
-			aria-label="Toggle map"
-			aria-pressed={showMap}
-			title={showMap ? 'Hide map' : 'Show map'}
-		>
-			<svg
-				viewBox="0 0 24 24"
-				class="h-4 w-4"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="1.8"
-				stroke-linecap="round"
-				stroke-linejoin="round"
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="relative" onpointerenter={openMapMenu} onpointerleave={closeMapMenu}>
+			<button
+				type="button"
+				onclick={() => (showMap = !showMap)}
+				class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 {showMap
+					? 'text-neutral-800'
+					: 'text-neutral-300'}"
+				aria-label="Toggle map"
+				aria-pressed={showMap}
+				title={showMap ? 'Hide map' : 'Show map'}
 			>
-				<polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" />
-				<line x1="9" y1="3" x2="9" y2="18" />
-				<line x1="15" y1="6" x2="15" y2="21" />
-			</svg>
-		</button>
+				{@render sourceIcon(mapSource)}
+			</button>
+			{#if showMapMenu}
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					onpointerenter={openMapMenu}
+					onpointerleave={closeMapMenu}
+					class="absolute bottom-full left-[-0.25rem] mb-1 flex gap-0.5 rounded-md bg-white px-1 py-0.5 shadow-lg ring-1 ring-neutral-200"
+				>
+					{#each SOURCES as src (src)}
+						<button
+							type="button"
+							onclick={() => (mapSource = src)}
+							class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 {mapSource ===
+							src
+								? 'text-neutral-800'
+								: 'text-neutral-300'}"
+							aria-label={TILE_SOURCES[src].label}
+							aria-pressed={mapSource === src}
+							title={TILE_SOURCES[src].label}
+						>
+							{@render sourceIcon(src)}
+						</button>
+					{/each}
+				</div>
+			{/if}
+		</div>
 	</div>
 
 	<div
