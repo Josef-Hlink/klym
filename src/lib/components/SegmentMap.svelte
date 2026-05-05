@@ -180,21 +180,29 @@
 		return { centerLat, centerLon, centerEle, cosLat, xSpanM, ySpanM, minEle, maxEle };
 	});
 
-	// Don't let the canvas grow taller than 1 / MIN_CANVAS_ASPECT of its width.
-	// Without this, a portrait route (high lat span, low lon span) projects
-	// into a comically tall canvas. Clamping makes the canvas at most 3:2
-	// landscape; portrait routes get vertical fit + side whitespace instead.
+	// Clamp canvas aspect so neither very portrait nor very wide routes
+	// produce extreme rectangles. Portrait routes get whitespace on the
+	// sides; very wide routes get whitespace above/below — both stay boxy.
 	const MIN_CANVAS_ASPECT = 1.5;
+	const MAX_CANVAS_ASPECT = 3;
+
+	// Data-driven aspect — used to size the canvas and pad the OSM tile.
+	// Stable across resizes so a manual resize doesn't trigger an OSM rebuild.
+	const dataAspect = $derived.by(() => {
+		if (!refFrame) return MIN_CANVAS_ASPECT;
+		const trueAspect = refFrame.xSpanM / refFrame.ySpanM;
+		return Math.max(MIN_CANVAS_ASPECT, Math.min(MAX_CANVAS_ASPECT, trueAspect));
+	});
+
+	// Live canvas aspect: dataAspect by default, but the wrapper aspect once
+	// the user has manually resized so the SVG fills without letterboxing.
+	const canvasAspect = $derived(
+		userHeight && wrapperWidth ? wrapperWidth / userHeight : dataAspect
+	);
 
 	const dimensions = $derived.by(() => {
 		if (!refFrame) return { W: VB_W, H: 600, innerW: VB_W - PAD * 2, innerH: 536, scale: 1 };
 		const innerW = VB_W - PAD * 2;
-		const trueAspect = refFrame.xSpanM / refFrame.ySpanM;
-		const dataAspect = Math.max(MIN_CANVAS_ASPECT, trueAspect);
-		// When the user has resized, match the actual rendered aspect so the SVG
-		// fills the wrapper without letterboxing.
-		const canvasAspect =
-			userHeight && wrapperWidth ? wrapperWidth / userHeight : dataAspect;
 		const innerH = innerW / canvasAspect;
 		const H = innerH + PAD * 2;
 		// Pick the smaller of the two scales so the route fits in both axes,
@@ -379,17 +387,16 @@
 		const baseLatPad = (maxLat - minLat) * TILE_BBOX_PAD;
 		const baseLonPad = (maxLon - minLon) * TILE_BBOX_PAD;
 
-		// Extend the tile bbox to cover the canvas, not just the route. For a
-		// portrait route in a landscape canvas the route alone leaves a narrow
-		// strip of map; here we compute how many extra metres we need on each
-		// axis to fill the canvas after the fit-contain projection, then
-		// translate that back into lat/lon padding.
+		// Extend the tile bbox to cover the data-driven canvas (not the live one
+		// that follows userHeight) so a manual resize doesn't trigger an OSM
+		// rebuild. The route itself still scales fine; only the tile snapshot
+		// gets cropped/letterboxed inside a resized canvas.
 		const trueAspect = refFrame.xSpanM / refFrame.ySpanM;
-		const canvasAspect = Math.max(MIN_CANVAS_ASPECT, trueAspect);
+		const aspect = dataAspect;
 		const canvasXspanM =
-			canvasAspect > trueAspect ? canvasAspect * refFrame.ySpanM : refFrame.xSpanM;
+			aspect > trueAspect ? aspect * refFrame.ySpanM : refFrame.xSpanM;
 		const canvasYspanM =
-			canvasAspect > trueAspect ? refFrame.ySpanM : refFrame.xSpanM / canvasAspect;
+			aspect > trueAspect ? refFrame.ySpanM : refFrame.xSpanM / aspect;
 		const extraLonPad =
 			Math.max(0, canvasXspanM - refFrame.xSpanM) / 2 / (refFrame.cosLat * M_PER_DEG);
 		const extraLatPad = Math.max(0, canvasYspanM - refFrame.ySpanM) / 2 / M_PER_DEG;
