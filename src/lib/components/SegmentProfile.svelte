@@ -374,6 +374,19 @@
 		/>
 	{/if}
 
+	{#if externalHoverDistM != null && externalHoverDistM >= startDistM && externalHoverDistM <= endDistM}
+		{@const tp = findPointAtDistance(points, externalHoverDistM)}
+		<circle
+			cx={xScale(externalHoverDistM)}
+			cy={yScale(tp.ele)}
+			r="8"
+			fill="#111"
+			stroke="#ffffff"
+			stroke-width="2"
+			pointer-events="none"
+		/>
+	{/if}
+
 	{#each bins as bin, i (bin.startM)}
 		{@const hx = xScale(bin.startM)}
 		{@const hw = Math.max(0.5, xScale(bin.endM) - hx)}

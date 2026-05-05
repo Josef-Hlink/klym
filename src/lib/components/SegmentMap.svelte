@@ -30,6 +30,10 @@
 	const HOVER_PX = 24;
 	const M_PER_DEG = 111111;
 	const ANCHOR_STEP_M = 250;
+	// Window (metres) for the hover tooltip's "precise" grade. Centred on
+	// distM, so the grade is averaged over distM ± HOVER_GRADE_WINDOW_M / 2.
+	// Larger = smoother, fewer per-GPX-point spikes; smaller = more local.
+	const HOVER_GRADE_WINDOW_M = 50;
 	const TILE_SIZE = 256;
 	const TILE_BBOX_PAD = 0.1; // 10% lat/lon padding around the route bbox
 	const TILE_MAX_TILES_PER_AXIS = 6;
@@ -827,10 +831,12 @@
 		document.body.style.cursor = '';
 	}
 
-	let hoverInfo = $state<{ idx: number; cursorX: number; cursorY: number } | null>(null);
+	let hoverInfo = $state<{ distM: number; cursorX: number; cursorY: number } | null>(
+		null
+	);
 
 	$effect(() => {
-		hoverDistM = hoverInfo ? slicedPoints[hoverInfo.idx]?.cumDistM ?? null : null;
+		hoverDistM = hoverInfo?.distM ?? null;
 	});
 
 	function binAtDist(distM: number): GradeBin | null {
@@ -842,7 +848,7 @@
 
 	function onWrapperPointerMove(e: PointerEvent) {
 		if (isDragging) return;
-		if (!svgEl || !wrapperEl || !viewport || projectedPoints.length === 0) return;
+		if (!svgEl || !wrapperEl || !viewport || projectedPoints.length < 2) return;
 		const svgRect = svgEl.getBoundingClientRect();
 		const wrapRect = wrapperEl.getBoundingClientRect();
 		if (svgRect.width <= 0) return;
@@ -850,21 +856,41 @@
 		const relY = (e.clientY - svgRect.top) / svgRect.height;
 		const svgX = viewport.x + relX * viewport.w;
 		const svgY = viewport.y + relY * viewport.h;
-		let bestIdx = -1;
+
+		// Find the closest point on the polyline (not just the closest vertex)
+		// so the marker and tooltip track the route at sub-vertex precision.
+		let bestSeg = -1;
+		let bestT = 0;
 		let bestDist = Infinity;
-		for (let i = 0; i < projectedPoints.length; i++) {
-			const [px, py] = projectedPoints[i];
+		for (let i = 0; i < projectedPoints.length - 1; i++) {
+			const [ax, ay] = projectedPoints[i];
+			const [bx, by] = projectedPoints[i + 1];
+			const dx = bx - ax;
+			const dy = by - ay;
+			const len2 = dx * dx + dy * dy;
+			let t = 0;
+			let px = ax;
+			let py = ay;
+			if (len2 > 1e-9) {
+				t = Math.max(0, Math.min(1, ((svgX - ax) * dx + (svgY - ay) * dy) / len2));
+				px = ax + t * dx;
+				py = ay + t * dy;
+			}
 			const d = Math.hypot(px - svgX, py - svgY);
 			if (d < bestDist) {
 				bestDist = d;
-				bestIdx = i;
+				bestSeg = i;
+				bestT = t;
 			}
 		}
 		const svgPerPx = viewport.w / svgRect.width;
 		const thresholdSvg = HOVER_PX * svgPerPx;
-		if (bestIdx >= 0 && bestDist <= thresholdSvg) {
+		if (bestSeg >= 0 && bestDist <= thresholdSvg) {
+			const a = slicedPoints[bestSeg];
+			const b = slicedPoints[bestSeg + 1];
+			const distM = a.cumDistM + bestT * (b.cumDistM - a.cumDistM);
 			hoverInfo = {
-				idx: bestIdx,
+				distM,
 				cursorX: e.clientX - wrapRect.left,
 				cursorY: e.clientY - wrapRect.top
 			};
@@ -1055,8 +1081,9 @@
 			/>
 		{/if}
 
-		{#if hoverInfo && projectedPoints[hoverInfo.idx]}
-			{@const [hx, hy] = projectedPoints[hoverInfo.idx]}
+		{#if hoverInfo}
+			{@const ip = findPointAtDistance(points, hoverInfo.distM)}
+			{@const [hx, hy] = projectLLE(ip.lat, ip.lon, ip.ele)}
 			<circle
 				cx={hx}
 				cy={hy}
@@ -1217,10 +1244,15 @@
 		</button>
 	</div>
 
-	{#if hoverInfo && slicedPoints[hoverInfo.idx]}
-		{@const p = slicedPoints[hoverInfo.idx]}
-		{@const bin = binAtDist(p.cumDistM)}
-		{@const distAlong = p.cumDistM - startDistM}
+	{#if hoverInfo}
+		{@const p = findPointAtDistance(points, hoverInfo.distM)}
+		{@const bin = binAtDist(hoverInfo.distM)}
+		{@const distAlong = hoverInfo.distM - startDistM}
+		{@const halfW = HOVER_GRADE_WINDOW_M / 2}
+		{@const wA = findPointAtDistance(points, hoverInfo.distM - halfW)}
+		{@const wB = findPointAtDistance(points, hoverInfo.distM + halfW)}
+		{@const wRun = wB.cumDistM - wA.cumDistM}
+		{@const localGrade = wRun > 0 ? ((wB.ele - wA.ele) / wRun) * 100 : 0}
 		<div
 			class="pointer-events-none absolute z-10 flex -translate-x-1/2 -translate-y-full items-center gap-1.5 whitespace-nowrap rounded-md bg-neutral-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-lg"
 			style:left="{hoverInfo.cursorX}px"
@@ -1237,6 +1269,9 @@
 						style:background-color={gradeColor(bin.grade)}
 					></span>
 					<span class="tabular-nums">{bin.grade.toFixed(1)}%</span>
+					{#if wRun > 0}
+						<span class="tabular-nums text-neutral-400">({localGrade.toFixed(1)}%)</span>
+					{/if}
 				</span>
 			{/if}
 		</div>
