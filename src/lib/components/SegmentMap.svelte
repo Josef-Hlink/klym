@@ -112,6 +112,7 @@
 
 	let showMap = $state(true);
 	let showAnchorLines = $state(true);
+	let showAllDrapes = $state(false);
 
 	let showVertPopover = $state(false);
 	let vertHideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -578,10 +579,57 @@
 		return { a: projectedPoints[0], b: projectedPoints[projectedPoints.length - 1] };
 	});
 
+	// Build the "drape" geometry for a single bin: a path of per-segment quads
+	// from the route surface down to its shadow at refFrame.minEle, plus the
+	// top edge as a polyline (used for the hover halo).
+	function buildDrapeForBin(bin: GradeBin): { polyline: string; drape: string } {
+		if (!refFrame) return { polyline: '', drape: '' };
+		const ground = refFrame.minEle;
+		const tops: [number, number][] = [];
+		const bots: [number, number][] = [];
+		const addPoint = (lat: number, lon: number, ele: number) => {
+			const t = projectLLE(lat, lon, ele);
+			const b = projectLLE(lat, lon, ground);
+			tops.push([t[0], t[1]]);
+			bots.push([b[0], b[1]]);
+		};
+
+		const a = findPointAtDistance(points, bin.startM);
+		addPoint(a.lat, a.lon, a.ele);
+		for (const p of slicedPoints) {
+			if (p.cumDistM <= bin.startM) continue;
+			if (p.cumDistM >= bin.endM) break;
+			addPoint(p.lat, p.lon, p.ele);
+		}
+		const z = findPointAtDistance(points, bin.endM);
+		addPoint(z.lat, z.lon, z.ele);
+
+		// Emit one quad per route segment with consistent clockwise winding so
+		// the nonzero fill rule doesn't cancel overlap when the route revisits
+		// an area (U-turns, switchbacks). One self-intersecting polygon would
+		// cancel itself out where the top and bottom edges cross.
+		const fmt = (p: [number, number]) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`;
+		let drape = '';
+		for (let i = 0; i < tops.length - 1; i++) {
+			const A = tops[i];
+			const B = tops[i + 1];
+			const C = bots[i + 1];
+			const D = bots[i];
+			// Cross of (B-A) × (D-A); positive in y-down screen coords means CW.
+			const cross = (B[0] - A[0]) * (D[1] - A[1]) - (B[1] - A[1]) * (D[0] - A[0]);
+			const seq = cross >= 0 ? [A, B, C, D] : [A, D, C, B];
+			drape += `M${fmt(seq[0])} L${fmt(seq[1])} L${fmt(seq[2])} L${fmt(seq[3])} Z `;
+		}
+
+		return { polyline: tops.map(fmt).join(' '), drape };
+	}
+
 	// Reverse-highlight: when the chart reports a hovered distance, draw a
-	// halo overlay along the corresponding section of the route polyline.
-	const externalHoverPolyline = $derived.by(() => {
-		if (externalHoverDistM == null || !refFrame) return '';
+	// halo overlay along the corresponding section of the route polyline,
+	// plus a translucent drape from the route surface down to the ground.
+	const externalHoverHighlight = $derived.by(() => {
+		if (externalHoverDistM == null || !refFrame)
+			return { polyline: '', drape: '', color: '' };
 		let bin: GradeBin | null = null;
 		for (const b of bins) {
 			if (externalHoverDistM >= b.startM && externalHoverDistM <= b.endM) {
@@ -589,21 +637,18 @@
 				break;
 			}
 		}
-		if (!bin) return '';
-		const parts: string[] = [];
-		const a = findPointAtDistance(points, bin.startM);
-		const [ax, ay] = projectLLE(a.lat, a.lon, a.ele);
-		parts.push(`${ax.toFixed(1)},${ay.toFixed(1)}`);
-		for (const p of slicedPoints) {
-			if (p.cumDistM <= bin.startM) continue;
-			if (p.cumDistM >= bin.endM) break;
-			const [x, y] = projectLLE(p.lat, p.lon, p.ele);
-			parts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
-		}
-		const z = findPointAtDistance(points, bin.endM);
-		const [zx, zy] = projectLLE(z.lat, z.lon, z.ele);
-		parts.push(`${zx.toFixed(1)},${zy.toFixed(1)}`);
-		return parts.join(' ');
+		if (!bin) return { polyline: '', drape: '', color: '' };
+		const { polyline, drape } = buildDrapeForBin(bin);
+		return { polyline, drape, color: gradeColor(bin.grade) };
+	});
+
+	// All drapes — every bin gets a translucent fence down to the ground.
+	const allDrapes = $derived.by(() => {
+		if (!showAllDrapes || !refFrame || bins.length === 0) return [];
+		return bins.map((bin) => ({
+			drape: buildDrapeForBin(bin).drape,
+			color: gradeColor(bin.grade)
+		}));
 	});
 
 	// Viewport (visible window in viewBox space).
@@ -915,6 +960,26 @@
 			/>
 		{/if}
 
+		{#each allDrapes as d, i (i)}
+			<path
+				d={d.drape}
+				fill={d.color}
+				fill-opacity="0.22"
+				stroke="none"
+				pointer-events="none"
+			/>
+		{/each}
+
+		{#if externalHoverHighlight.drape}
+			<path
+				d={externalHoverHighlight.drape}
+				fill={externalHoverHighlight.color}
+				fill-opacity="0.3"
+				stroke="none"
+				pointer-events="none"
+			/>
+		{/if}
+
 		{#if showAnchorLines}
 			{#each anchorLines as anchor, i (i)}
 				<line
@@ -958,9 +1023,9 @@
 			/>
 		{/each}
 
-		{#if externalHoverPolyline}
+		{#if externalHoverHighlight.polyline}
 			<polyline
-				points={externalHoverPolyline}
+				points={externalHoverHighlight.polyline}
 				fill="none"
 				stroke="#ffffff"
 				stroke-opacity="0.55"
@@ -1057,6 +1122,32 @@
 		class="absolute bottom-2 right-2 z-30 flex items-center gap-0.5 rounded-md bg-white/90 px-1 py-0.5 shadow-sm"
 	>
 		{#if is3D}
+			<button
+				type="button"
+				onclick={() => (showAllDrapes = !showAllDrapes)}
+				class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 {showAllDrapes
+					? 'text-neutral-800'
+					: 'text-neutral-300'}"
+				aria-label="Toggle drapes"
+				aria-pressed={showAllDrapes}
+				title={showAllDrapes ? 'Hide drapes' : 'Show drapes'}
+			>
+				<svg
+					viewBox="0 0 24 24"
+					class="h-4 w-4"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="1.6"
+					stroke-linejoin="round"
+					stroke-linecap="round"
+				>
+					<path
+						d="M 3 19 L 3 12 Q 6 7, 10 11 Q 13 14, 16 8 Q 19 4, 21 7 L 21 19 Z"
+						fill="currentColor"
+						fill-opacity="0.25"
+					/>
+				</svg>
+			</button>
 			<button
 				type="button"
 				onclick={() => (showAnchorLines = !showAnchorLines)}
