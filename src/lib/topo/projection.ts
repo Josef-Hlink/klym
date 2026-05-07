@@ -37,6 +37,8 @@ export type Dimensions = {
 
 export type Projected = [number, number, number];
 
+export type Projector = (lat: number, lon: number, ele: number) => Projected;
+
 export type ProjectCtx = {
 	refFrame: RefFrame;
 	dimensions: Dimensions;
@@ -152,8 +154,6 @@ export function projectLLE(
 // Bind a projection context once and return a function that projects a
 // (lat, lon, ele) tuple — convenient for callers that project many points
 // against the same context (e.g. building a polyline).
-export function makeProjector(
-	ctx: ProjectCtx
-): (lat: number, lon: number, ele: number) => Projected {
+export function makeProjector(ctx: ProjectCtx): Projector {
 	return (lat, lon, ele) => projectLLE(lat, lon, ele, ctx);
 }

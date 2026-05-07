@@ -3,6 +3,16 @@
 	import { findPointAtDistance, gradeColor, type GradeBin } from '$lib/elevation.js';
 	import { fmtKm, fmtM } from '$lib/format.js';
 	import {
+		buildAllDrapes,
+		buildAnchorLines,
+		buildBlockFaces,
+		buildBoundaryAnchors,
+		buildHoverHighlight,
+		buildPolylineRuns,
+		buildShadowPoints,
+		buildTileTransform
+	} from '$lib/topo/geometry.js';
+	import {
 		clampDataAspect,
 		computeDimensions,
 		computeRefFrame,
@@ -48,7 +58,6 @@
 	const MIN_VIEW_FRAC = 0.05;
 	const MAX_VIEW_FRAC = 3;
 	const HOVER_PX = 24;
-	const ANCHOR_STEP_M = 250;
 	// Window (metres) for the hover tooltip's "precise" grade. Centred on
 	// distM, so the grade is averaged over distM ± HOVER_GRADE_WINDOW_M / 2.
 	// Larger = smoother, fewer per-GPX-point spikes; smaller = more local.
@@ -246,225 +255,32 @@
 	// derive the affine transform that places the image as the right
 	// parallelogram. Orthographic projection means a planar rectangle stays
 	// a parallelogram under any rotation, so an affine matrix is sufficient.
-	const tileTransform = $derived.by(() => {
-		if (!tileImage || !refFrame) return null;
-		const ground = refFrame.minEle;
-		const tl = project(tileImage.maxLat, tileImage.minLon, ground); // north-west
-		const tr = project(tileImage.maxLat, tileImage.maxLon, ground); // north-east
-		const bl = project(tileImage.minLat, tileImage.minLon, ground); // south-west
-		return {
-			a: tr[0] - tl[0],
-			b: tr[1] - tl[1],
-			c: bl[0] - tl[0],
-			d: bl[1] - tl[1],
-			e: tl[0],
-			f: tl[1]
-		};
-	});
-
+	const tileTransform = $derived(buildTileTransform(tileImage, refFrame, project));
 	const tileOpacity = $derived(tileFadeOpacity(pitch));
-
-	// Side faces of the "earth block" the OSM ground sits on. Each face is a
-	// parallelogram (top edge at minEle, bottom edge at minEle - BLOCK_DEPTH_M).
-	// Sorted back-to-front so painter's algorithm hides the rear faces.
-	const blockFaces = $derived.by(() => {
-		if (!tileImage || !refFrame) return [];
-		const top = refFrame.minEle;
-		const bot = refFrame.minEle - BLOCK_DEPTH_M;
-		// Top corners
-		const nwT = project(tileImage.maxLat, tileImage.minLon, top);
-		const neT = project(tileImage.maxLat, tileImage.maxLon, top);
-		const seT = project(tileImage.minLat, tileImage.maxLon, top);
-		const swT = project(tileImage.minLat, tileImage.minLon, top);
-		// Bottom corners
-		const nwB = project(tileImage.maxLat, tileImage.minLon, bot);
-		const neB = project(tileImage.maxLat, tileImage.maxLon, bot);
-		const seB = project(tileImage.minLat, tileImage.maxLon, bot);
-		const swB = project(tileImage.minLat, tileImage.minLon, bot);
-
-		const faces = [
-			{ name: 'N', corners: [nwT, neT, neB, nwB] },
-			{ name: 'E', corners: [neT, seT, seB, neB] },
-			{ name: 'S', corners: [seT, swT, swB, seB] },
-			{ name: 'W', corners: [swT, nwT, nwB, swB] }
-		];
-
-		const out = faces.map((f) => {
-			const pts = f.corners.map((c) => `${c[0].toFixed(1)},${c[1].toFixed(1)}`).join(' ');
-			const depth = (f.corners[0][2] + f.corners[1][2] + f.corners[2][2] + f.corners[3][2]) / 4;
-			return { points: pts, depth };
-		});
-		// Lower depth (further from camera) first.
-		out.sort((a, b) => a.depth - b.depth);
-		return out;
-	});
+	const blockFaces = $derived(buildBlockFaces(tileImage, refFrame, project, BLOCK_DEPTH_M));
 
 	const projectedPoints = $derived(slicedPoints.map((p) => project3d(p)));
 
-	// Flat ground-projected shadow of the route — every point lifted (or rather
-	// dropped) to the segment's minimum elevation. At pitch=0 it overlaps the
-	// real route exactly, so the top-down view is unchanged. As you tilt, the
-	// shadow separates and anchors the route to the ground plane.
-	const shadowPoints = $derived.by(() => {
-		if (!refFrame || slicedPoints.length < 2) return '';
-		const parts: string[] = [];
-		for (const p of slicedPoints) {
-			const [x, y] = project(p.lat, p.lon, refFrame.minEle);
-			parts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
-		}
-		return parts.join(' ');
-	});
-
-	// Subtle vertical anchor lines from the route surface down to the segment's
-	// lowest elevation. At pitch=0 these collapse to zero length so the top-down
-	// view is unchanged. Sampled at fixed distance intervals so density stays
-	// stable regardless of the route's GPX point density.
-	const anchorLines = $derived.by(() => {
-		const out: { x1: number; y1: number; x2: number; y2: number }[] = [];
-		if (!refFrame || endDistM <= startDistM) return out;
-		for (let d = startDistM; d <= endDistM + 1e-3; d += ANCHOR_STEP_M) {
-			const distM = Math.min(d, endDistM);
-			const ip = findPointAtDistance(points, distM);
-			const [tx, ty] = project(ip.lat, ip.lon, ip.ele);
-			const [bx, by] = project(ip.lat, ip.lon, refFrame.minEle);
-			out.push({ x1: tx, y1: ty, x2: bx, y2: by });
-		}
-		return out;
-	});
-
-	// Heavier anchor lines at each segment-bin boundary, colored by the bin
-	// that ends at the boundary. Anchors the last point (start is anchored by
-	// the green start dot already).
-	const boundaryAnchors = $derived.by(() => {
-		const out: { x1: number; y1: number; x2: number; y2: number; color: string }[] = [];
-		if (!refFrame || bins.length === 0) return out;
-		for (const bin of bins) {
-			const ip = findPointAtDistance(points, bin.endM);
-			const [tx, ty] = project(ip.lat, ip.lon, ip.ele);
-			const [bx, by] = project(ip.lat, ip.lon, refFrame.minEle);
-			out.push({ x1: tx, y1: ty, x2: bx, y2: by, color: gradeColor(bin.grade) });
-		}
-		return out;
-	});
-
-	// Polyline runs of consecutive same-color segments, each tagged with an
-	// average depth so we can render back-to-front (painter's algorithm).
-	const polylines = $derived.by(() => {
-		const out: { points: string; color: string; depth: number }[] = [];
-		if (slicedPoints.length < 2 || !refFrame) return out;
-
-		const segColors: string[] = new Array(slicedPoints.length - 1);
-		let binIdx = 0;
-		for (let i = 0; i < slicedPoints.length - 1; i++) {
-			const midDist = (slicedPoints[i].cumDistM + slicedPoints[i + 1].cumDistM) / 2;
-			while (binIdx < bins.length - 1 && bins[binIdx].endM < midDist) binIdx++;
-			const grade = bins[binIdx]?.grade ?? 0;
-			segColors[i] = gradeColor(grade);
-		}
-
-		let runStart = 0;
-		for (let i = 0; i < segColors.length; i++) {
-			const isLast = i === segColors.length - 1;
-			const colorChanged = !isLast && segColors[i + 1] !== segColors[i];
-			if (isLast || colorChanged) {
-				const pts: string[] = [];
-				let depthSum = 0;
-				let depthCount = 0;
-				for (let j = runStart; j <= i + 1; j++) {
-					const [x, y, d] = projectedPoints[j];
-					pts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
-					depthSum += d;
-					depthCount++;
-				}
-				out.push({
-					points: pts.join(' '),
-					color: segColors[i],
-					depth: depthCount > 0 ? depthSum / depthCount : 0
-				});
-				runStart = i + 1;
-			}
-		}
-		// Back-to-front: lower depth (further from camera) first.
-		out.sort((a, b) => a.depth - b.depth);
-		return out;
-	});
+	const shadowPoints = $derived(buildShadowPoints(slicedPoints, refFrame, project));
+	const anchorLines = $derived(
+		buildAnchorLines(points, startDistM, endDistM, refFrame, project)
+	);
+	const boundaryAnchors = $derived(buildBoundaryAnchors(points, bins, refFrame, project));
+	const polylines = $derived(
+		buildPolylineRuns(slicedPoints, projectedPoints, bins, refFrame)
+	);
 
 	const startEnd = $derived.by(() => {
 		if (projectedPoints.length < 2) return null;
 		return { a: projectedPoints[0], b: projectedPoints[projectedPoints.length - 1] };
 	});
 
-	// Build the "drape" geometry for a single bin: a path of per-segment quads
-	// from the route surface down to its shadow at refFrame.minEle, plus the
-	// top edge as a polyline (used for the hover halo).
-	function buildDrapeForBin(bin: GradeBin): { polyline: string; drape: string } {
-		if (!refFrame) return { polyline: '', drape: '' };
-		const ground = refFrame.minEle;
-		const tops: [number, number][] = [];
-		const bots: [number, number][] = [];
-		const addPoint = (lat: number, lon: number, ele: number) => {
-			const t = project(lat, lon, ele);
-			const b = project(lat, lon, ground);
-			tops.push([t[0], t[1]]);
-			bots.push([b[0], b[1]]);
-		};
-
-		const a = findPointAtDistance(points, bin.startM);
-		addPoint(a.lat, a.lon, a.ele);
-		for (const p of slicedPoints) {
-			if (p.cumDistM <= bin.startM) continue;
-			if (p.cumDistM >= bin.endM) break;
-			addPoint(p.lat, p.lon, p.ele);
-		}
-		const z = findPointAtDistance(points, bin.endM);
-		addPoint(z.lat, z.lon, z.ele);
-
-		// Emit one quad per route segment with consistent clockwise winding so
-		// the nonzero fill rule doesn't cancel overlap when the route revisits
-		// an area (U-turns, switchbacks). One self-intersecting polygon would
-		// cancel itself out where the top and bottom edges cross.
-		const fmt = (p: [number, number]) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`;
-		let drape = '';
-		for (let i = 0; i < tops.length - 1; i++) {
-			const A = tops[i];
-			const B = tops[i + 1];
-			const C = bots[i + 1];
-			const D = bots[i];
-			// Cross of (B-A) × (D-A); positive in y-down screen coords means CW.
-			const cross = (B[0] - A[0]) * (D[1] - A[1]) - (B[1] - A[1]) * (D[0] - A[0]);
-			const seq = cross >= 0 ? [A, B, C, D] : [A, D, C, B];
-			drape += `M${fmt(seq[0])} L${fmt(seq[1])} L${fmt(seq[2])} L${fmt(seq[3])} Z `;
-		}
-
-		return { polyline: tops.map(fmt).join(' '), drape };
-	}
-
-	// Reverse-highlight: when the chart reports a hovered distance, draw a
-	// halo overlay along the corresponding section of the route polyline,
-	// plus a translucent drape from the route surface down to the ground.
-	const externalHoverHighlight = $derived.by(() => {
-		if (externalHoverDistM == null || !refFrame)
-			return { polyline: '', drape: '', color: '' };
-		let bin: GradeBin | null = null;
-		for (const b of bins) {
-			if (externalHoverDistM >= b.startM && externalHoverDistM <= b.endM) {
-				bin = b;
-				break;
-			}
-		}
-		if (!bin) return { polyline: '', drape: '', color: '' };
-		const { polyline, drape } = buildDrapeForBin(bin);
-		return { polyline, drape, color: gradeColor(bin.grade) };
-	});
-
-	// All drapes — every bin gets a translucent fence down to the ground.
-	const allDrapes = $derived.by(() => {
-		if (!showAllDrapes || !refFrame || bins.length === 0) return [];
-		return bins.map((bin) => ({
-			drape: buildDrapeForBin(bin).drape,
-			color: gradeColor(bin.grade)
-		}));
-	});
+	const externalHoverHighlight = $derived(
+		buildHoverHighlight(externalHoverDistM, bins, points, slicedPoints, refFrame, project)
+	);
+	const allDrapes = $derived(
+		showAllDrapes ? buildAllDrapes(bins, points, slicedPoints, refFrame, project) : []
+	);
 
 	// Viewport (visible window in viewBox space).
 	let viewport = $state<{ x: number; y: number; w: number; h: number } | null>(null);
