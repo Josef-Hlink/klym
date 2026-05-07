@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { fmtKm, fmtM } from '$lib/format.js';
 	import type { PageProps } from './$types.js';
 
 	let { data, form }: PageProps = $props();
@@ -105,12 +106,6 @@
 		if (n < 1024) return `${n} B`;
 		if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
 		return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-	}
-	function fmtKm(m: number): string {
-		return `${(m / 1000).toFixed(1)} km`;
-	}
-	function fmtM(m: number): string {
-		return `${Math.round(m)} m`;
 	}
 	function fmtDate(iso: string): string {
 		return new Date(iso).toLocaleDateString();
@@ -314,7 +309,7 @@
 									</div>
 								</div>
 								<div class="text-right text-sm text-neutral-600">
-									<div>{fmtKm(route.totalDistM)}</div>
+									<div>{fmtKm(route.totalDistM, 1)}</div>
 									<div class="text-xs text-neutral-500">+{fmtM(route.totalAscentM)}</div>
 								</div>
 								<div class="flex items-center gap-1">
@@ -341,7 +336,7 @@
 									</div>
 								</div>
 								<div class="text-right text-sm text-neutral-600">
-									<div>{fmtKm(route.totalDistM)}</div>
+									<div>{fmtKm(route.totalDistM, 1)}</div>
 									<div class="text-xs text-neutral-500">+{fmtM(route.totalAscentM)}</div>
 								</div>
 							</a>

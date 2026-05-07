@@ -4,6 +4,7 @@
 	import 'uplot/dist/uPlot.min.css';
 	import type { RoutePoint } from '$lib/types.js';
 	import { bucketGradeAtDistance, findPointAtDistance, gradeColor } from '$lib/elevation.js';
+	import { fmtKm, fmtM } from '$lib/format.js';
 
 	const Y_HEADROOM = 0.25;
 	const CHART_H = 200;
@@ -193,13 +194,6 @@
 		u?.destroy();
 		u = null;
 	});
-
-	function fmtKm(m: number): string {
-		return `${(m / 1000).toFixed(2)} km`;
-	}
-	function fmtM(m: number): string {
-		return `${Math.round(m)} m`;
-	}
 
 	let dragging = $state<'A' | 'B' | null>(null);
 	let dragStartX = 0;

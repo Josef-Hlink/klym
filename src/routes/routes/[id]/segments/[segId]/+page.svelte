@@ -2,6 +2,7 @@
 	import SegmentProfile, { type GradeLabelMode } from '$lib/components/SegmentProfile.svelte';
 	import SegmentMap from '$lib/components/SegmentMap.svelte';
 	import { computeAdaptiveBins, computeBins, computeCropStats, gradeColor } from '$lib/elevation.js';
+	import { fmtKm, fmtM } from '$lib/format.js';
 	import type { PageProps } from './$types.js';
 
 	let { data }: PageProps = $props();
@@ -70,13 +71,6 @@
 
 	function fmtBinLabel(m: number): string {
 		return m >= 1000 ? `${(m / 1000).toFixed(m % 1000 === 0 ? 0 : 1)} km` : `${m} m`;
-	}
-
-	function fmtKm(m: number): string {
-		return `${(m / 1000).toFixed(2)} km`;
-	}
-	function fmtM(m: number): string {
-		return `${Math.round(m)} m`;
 	}
 
 	function serializeSvg(svg: SVGSVGElement): string {

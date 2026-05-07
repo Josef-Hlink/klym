@@ -4,6 +4,7 @@
 	import RouteMap from '$lib/components/RouteMap.svelte';
 	import ElevationChart from '$lib/components/ElevationChart.svelte';
 	import { computeCropStats, gradeColor } from '$lib/elevation.js';
+	import { fmtKm, fmtM } from '$lib/format.js';
 	import type { PageProps } from './$types.js';
 
 	let { data, form }: PageProps = $props();
@@ -183,12 +184,6 @@
 		return () => document.removeEventListener('keydown', handler);
 	});
 
-	function fmtKm(m: number): string {
-		return `${(m / 1000).toFixed(2)} km`;
-	}
-	function fmtM(m: number): string {
-		return `${Math.round(m)} m`;
-	}
 </script>
 
 <svelte:head>

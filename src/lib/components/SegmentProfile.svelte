@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { computeBins, findPointAtDistance, gradeColor, type GradeBin } from '$lib/elevation.js';
+	import { fmtDist } from '$lib/format.js';
 	import type { RoutePoint } from '$lib/types.js';
 
 	export type GradeLabelMode = 'percent' | 'number' | 'off';
@@ -177,11 +178,6 @@
 		}
 		return parts.join(' ');
 	});
-
-	function fmtDist(m: number): string {
-		const km = m / 1000;
-		return km >= 10 ? `${km.toFixed(0)}km` : `${km.toFixed(1)}km`;
-	}
 
 	const endEle = $derived(slicedPoints[slicedPoints.length - 1]?.ele ?? 0);
 	const startEle = $derived(slicedPoints[0]?.ele ?? 0);

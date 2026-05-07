@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { findPointAtDistance, gradeColor, type GradeBin } from '$lib/elevation.js';
+	import { fmtKm, fmtM } from '$lib/format.js';
 	import type { RoutePoint } from '$lib/types.js';
 
 	type Props = {
@@ -968,12 +969,6 @@
 		document.body.style.cursor = '';
 	});
 
-	function fmtKm(m: number): string {
-		return `${(m / 1000).toFixed(2)} km`;
-	}
-	function fmtM(m: number): string {
-		return `${Math.round(m)} m`;
-	}
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
