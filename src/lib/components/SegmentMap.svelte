@@ -2,6 +2,18 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { findPointAtDistance, gradeColor, type GradeBin } from '$lib/elevation.js';
 	import { fmtKm, fmtM } from '$lib/format.js';
+	import {
+		clampDataAspect,
+		computeDimensions,
+		computeRefFrame,
+		makeProjector,
+		MAX_CANVAS_ASPECT,
+		MIN_CANVAS_ASPECT,
+		M_PER_DEG,
+		PAD,
+		VB_W,
+		type Projected
+	} from '$lib/topo/projection.js';
 	import type { RoutePoint } from '$lib/types.js';
 
 	type Props = {
@@ -21,15 +33,12 @@
 		externalHoverDistM = null
 	}: Props = $props();
 
-	const VB_W = 1600;
-	const PAD = 32;
 	const STROKE = 6;
 	const DRAG_THRESHOLD_PX = 4;
 	const ZOOM_FACTOR = 0.85;
 	const MIN_VIEW_FRAC = 0.05;
 	const MAX_VIEW_FRAC = 3;
 	const HOVER_PX = 24;
-	const M_PER_DEG = 111111;
 	const ANCHOR_STEP_M = 250;
 	// Window (metres) for the hover tooltip's "precise" grade. Centred on
 	// distM, so the grade is averaged over distM ± HOVER_GRADE_WINDOW_M / 2.
@@ -203,44 +212,11 @@
 	// Reference frame: route center in lat/lon/ele, plus 2D extents in metres.
 	// The 2D extents fix the canvas size — we scale rotated points using this
 	// reference scale so layout doesn't jitter as the user rotates.
-	const refFrame = $derived.by(() => {
-		if (slicedPoints.length < 2) return null;
-		let minLat = Infinity;
-		let maxLat = -Infinity;
-		let minLon = Infinity;
-		let maxLon = -Infinity;
-		let minEle = Infinity;
-		let maxEle = -Infinity;
-		for (const p of slicedPoints) {
-			if (p.lat < minLat) minLat = p.lat;
-			if (p.lat > maxLat) maxLat = p.lat;
-			if (p.lon < minLon) minLon = p.lon;
-			if (p.lon > maxLon) maxLon = p.lon;
-			if (p.ele < minEle) minEle = p.ele;
-			if (p.ele > maxEle) maxEle = p.ele;
-		}
-		const centerLat = (minLat + maxLat) / 2;
-		const centerLon = (minLon + maxLon) / 2;
-		const centerEle = (minEle + maxEle) / 2;
-		const cosLat = Math.cos((centerLat * Math.PI) / 180);
-		const xSpanM = Math.max(1, (maxLon - minLon) * cosLat * M_PER_DEG);
-		const ySpanM = Math.max(1, (maxLat - minLat) * M_PER_DEG);
-		return { centerLat, centerLon, centerEle, cosLat, xSpanM, ySpanM, minEle, maxEle };
-	});
-
-	// Clamp canvas aspect so neither very portrait nor very wide routes
-	// produce extreme rectangles. Portrait routes get whitespace on the
-	// sides; very wide routes get whitespace above/below — both stay boxy.
-	const MIN_CANVAS_ASPECT = 1.5;
-	const MAX_CANVAS_ASPECT = 3;
+	const refFrame = $derived(computeRefFrame(slicedPoints));
 
 	// Data-driven aspect — used to size the canvas and pad the OSM tile.
 	// Stable across resizes so a manual resize doesn't trigger an OSM rebuild.
-	const dataAspect = $derived.by(() => {
-		if (!refFrame) return MIN_CANVAS_ASPECT;
-		const trueAspect = refFrame.xSpanM / refFrame.ySpanM;
-		return Math.max(MIN_CANVAS_ASPECT, Math.min(MAX_CANVAS_ASPECT, trueAspect));
-	});
+	const dataAspect = $derived(clampDataAspect(refFrame));
 
 	// Live canvas aspect: dataAspect by default, but the wrapper aspect once
 	// the user has manually resized so the SVG fills without letterboxing.
@@ -248,57 +224,22 @@
 		userHeight && wrapperWidth ? wrapperWidth / userHeight : dataAspect
 	);
 
-	const dimensions = $derived.by(() => {
-		if (!refFrame) return { W: VB_W, H: 600, innerW: VB_W - PAD * 2, innerH: 536, scale: 1 };
-		const innerW = VB_W - PAD * 2;
-		const innerH = innerW / canvasAspect;
-		const H = innerH + PAD * 2;
-		// Pick the smaller of the two scales so the route fits in both axes,
-		// preserving aspect (no squishing).
-		const scaleByW = innerW / refFrame.xSpanM;
-		const scaleByH = innerH / refFrame.ySpanM;
-		const scale = Math.min(scaleByW, scaleByH);
-		return { W: VB_W, H, innerW, innerH, scale };
-	});
-
-	function rotate3d(
-		x: number,
-		y: number,
-		z: number,
-		yawRad: number,
-		pitchRad: number
-	): [number, number, number] {
-		const cy = Math.cos(yawRad);
-		const sy = Math.sin(yawRad);
-		const x1 = x * cy - y * sy;
-		const y1 = x * sy + y * cy;
-		const z1 = z;
-		const cp = Math.cos(pitchRad);
-		const sp = Math.sin(pitchRad);
-		// Pitch: tilting the world forward (pitch>0) raises high-z points on
-		// screen (smaller SVG y) — equivalent to camera tilting up.
-		const y2 = y1 * cp + z1 * sp;
-		const z2 = -y1 * sp + z1 * cp;
-		return [x1, y2, z2];
-	}
+	const dimensions = $derived(computeDimensions(refFrame, canvasAspect));
 
 	// Project a (lat, lon, ele) tuple into [svg_x, svg_y, depth_metres].
-	// At yaw=0, pitch=0 this matches the previous 2D top-down projection.
-	function projectLLE(lat: number, lon: number, ele: number): [number, number, number] {
-		if (!refFrame) return [VB_W / 2, dimensions.H / 2, 0];
-		const xm = (lon - refFrame.centerLon) * refFrame.cosLat * M_PER_DEG;
-		const ym = (lat - refFrame.centerLat) * M_PER_DEG;
-		const zm = (ele - refFrame.centerEle) * zExaggeration;
-		const [vx, vy, vz] = rotate3d(xm, ym, zm, yaw, pitch);
-		const cx = VB_W / 2;
-		const cy = dimensions.H / 2;
-		const sx = cx + vx * dimensions.scale;
-		const sy = cy - vy * dimensions.scale; // SVG y grows downward
-		return [sx, sy, vz];
-	}
+	// Closes over the current ctx so each derived rerun gets a fresh projector
+	// matched to live yaw/pitch/zExaggeration. Falls back to a centre-of-canvas
+	// stub when there's no refFrame yet.
+	const project = $derived.by(() => {
+		if (!refFrame) {
+			const fallback: Projected = [VB_W / 2, dimensions.H / 2, 0];
+			return (_lat: number, _lon: number, _ele: number) => fallback;
+		}
+		return makeProjector({ refFrame, dimensions, yaw, pitch, zExaggeration });
+	});
 
-	function project3d(p: RoutePoint): [number, number, number] {
-		return projectLLE(p.lat, p.lon, p.ele);
+	function project3d(p: RoutePoint): Projected {
+		return project(p.lat, p.lon, p.ele);
 	}
 
 	// Standard slippy-tile <-> lat/lon math.
@@ -484,9 +425,9 @@
 	const tileTransform = $derived.by(() => {
 		if (!tileImage || !refFrame) return null;
 		const ground = refFrame.minEle;
-		const tl = projectLLE(tileImage.maxLat, tileImage.minLon, ground); // north-west
-		const tr = projectLLE(tileImage.maxLat, tileImage.maxLon, ground); // north-east
-		const bl = projectLLE(tileImage.minLat, tileImage.minLon, ground); // south-west
+		const tl = project(tileImage.maxLat, tileImage.minLon, ground); // north-west
+		const tr = project(tileImage.maxLat, tileImage.maxLon, ground); // north-east
+		const bl = project(tileImage.minLat, tileImage.minLon, ground); // south-west
 		return {
 			a: tr[0] - tl[0],
 			b: tr[1] - tl[1],
@@ -511,15 +452,15 @@
 		const top = refFrame.minEle;
 		const bot = refFrame.minEle - BLOCK_DEPTH_M;
 		// Top corners
-		const nwT = projectLLE(tileImage.maxLat, tileImage.minLon, top);
-		const neT = projectLLE(tileImage.maxLat, tileImage.maxLon, top);
-		const seT = projectLLE(tileImage.minLat, tileImage.maxLon, top);
-		const swT = projectLLE(tileImage.minLat, tileImage.minLon, top);
+		const nwT = project(tileImage.maxLat, tileImage.minLon, top);
+		const neT = project(tileImage.maxLat, tileImage.maxLon, top);
+		const seT = project(tileImage.minLat, tileImage.maxLon, top);
+		const swT = project(tileImage.minLat, tileImage.minLon, top);
 		// Bottom corners
-		const nwB = projectLLE(tileImage.maxLat, tileImage.minLon, bot);
-		const neB = projectLLE(tileImage.maxLat, tileImage.maxLon, bot);
-		const seB = projectLLE(tileImage.minLat, tileImage.maxLon, bot);
-		const swB = projectLLE(tileImage.minLat, tileImage.minLon, bot);
+		const nwB = project(tileImage.maxLat, tileImage.minLon, bot);
+		const neB = project(tileImage.maxLat, tileImage.maxLon, bot);
+		const seB = project(tileImage.minLat, tileImage.maxLon, bot);
+		const swB = project(tileImage.minLat, tileImage.minLon, bot);
 
 		const faces = [
 			{ name: 'N', corners: [nwT, neT, neB, nwB] },
@@ -548,7 +489,7 @@
 		if (!refFrame || slicedPoints.length < 2) return '';
 		const parts: string[] = [];
 		for (const p of slicedPoints) {
-			const [x, y] = projectLLE(p.lat, p.lon, refFrame.minEle);
+			const [x, y] = project(p.lat, p.lon, refFrame.minEle);
 			parts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
 		}
 		return parts.join(' ');
@@ -564,8 +505,8 @@
 		for (let d = startDistM; d <= endDistM + 1e-3; d += ANCHOR_STEP_M) {
 			const distM = Math.min(d, endDistM);
 			const ip = findPointAtDistance(points, distM);
-			const [tx, ty] = projectLLE(ip.lat, ip.lon, ip.ele);
-			const [bx, by] = projectLLE(ip.lat, ip.lon, refFrame.minEle);
+			const [tx, ty] = project(ip.lat, ip.lon, ip.ele);
+			const [bx, by] = project(ip.lat, ip.lon, refFrame.minEle);
 			out.push({ x1: tx, y1: ty, x2: bx, y2: by });
 		}
 		return out;
@@ -579,8 +520,8 @@
 		if (!refFrame || bins.length === 0) return out;
 		for (const bin of bins) {
 			const ip = findPointAtDistance(points, bin.endM);
-			const [tx, ty] = projectLLE(ip.lat, ip.lon, ip.ele);
-			const [bx, by] = projectLLE(ip.lat, ip.lon, refFrame.minEle);
+			const [tx, ty] = project(ip.lat, ip.lon, ip.ele);
+			const [bx, by] = project(ip.lat, ip.lon, refFrame.minEle);
 			out.push({ x1: tx, y1: ty, x2: bx, y2: by, color: gradeColor(bin.grade) });
 		}
 		return out;
@@ -642,8 +583,8 @@
 		const tops: [number, number][] = [];
 		const bots: [number, number][] = [];
 		const addPoint = (lat: number, lon: number, ele: number) => {
-			const t = projectLLE(lat, lon, ele);
-			const b = projectLLE(lat, lon, ground);
+			const t = project(lat, lon, ele);
+			const b = project(lat, lon, ground);
 			tops.push([t[0], t[1]]);
 			bots.push([b[0], b[1]]);
 		};
@@ -1128,7 +1069,7 @@
 
 		{#if hoverInfo}
 			{@const ip = findPointAtDistance(points, hoverInfo.distM)}
-			{@const [hx, hy] = projectLLE(ip.lat, ip.lon, ip.ele)}
+			{@const [hx, hy] = project(ip.lat, ip.lon, ip.ele)}
 			<circle
 				cx={hx}
 				cy={hy}
