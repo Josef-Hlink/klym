@@ -19,15 +19,19 @@ Remote: `Josef-Hlink/klym` (private, MIT).
 - uPlot 1.6 (interactive elevation chart in the route viewer)
 - `fast-xml-parser` (GPX parsing server-side)
 - Node `fs/promises` for persistence — no database
+- Vitest 4 for the pure-helper tests under `src/lib/`
 
 Package manager is **pnpm**. Use `pnpm <script>`, not `pnpm exec <tool>`.
 
 ## Commands
 
 - `pnpm dev` — dev server (user keeps one running in a separate tmux
-  window during sessions; don't start another).
+  window during sessions; don't start another). Pinned to **port 1047**
+  with `strictPort` (1047m = Strava-verified Alpe d'Huez elevation gain).
 - `pnpm check` — `svelte-kit sync && svelte-check`. Run this after every
   change; user has allowlisted it.
+- `pnpm test` / `pnpm test:watch` — vitest. Run after changes to anything
+  under `src/lib/` (helpers + topo modules); the suite is fast (< 1s).
 - `pnpm build` / `pnpm preview`
 
 ## Routes
@@ -133,47 +137,29 @@ visible in the export must be encoded that way.
 ### SegmentMap (3D segment view)
 
 Lives at the bottom of the segment page. Pure SVG, no MapLibre — every
-pixel is hand-computed.
+pixel is hand-computed. The component owns reactive state (camera,
+viewport, hover, tile fetch) and the SVG template; all the math lives
+under `src/lib/topo/` (projection, tiles, geometry, viewport — each
+with co-located tests). **See `src/lib/topo/CLAUDE.md` for the module
+map and in-dir conventions.**
 
-- **Projection** is orthographic. `projectLLE(lat, lon, ele)` converts
-  to metres around the segment center (longitude scaled by
-  `cos(centerLat)`), applies `rotate3d(yaw, pitch)`, then maps to SVG
-  via a single `dimensions.scale` derived to fit the route in the
-  canvas. Returns `[svgX, svgY, depth]`. `depth` (rotated z) is used
-  for painter's-algorithm ordering of the colored polyline runs.
-- **Polylines** are grouped by run of same-color segments (one
-  `<polyline>` per run) so we don't pay the per-segment cost of one
-  element each. Sorted back-to-front by average depth.
-- **OSM ground texture** is built client-side: pick a slippy-tile zoom
-  that keeps the route bbox under `TILE_MAX_TILES_PER_AXIS` (6), fetch
-  all tiles in parallel, composite onto an offscreen canvas, export as
-  a single `data:image/png` URL, then placed in the SVG via an `<image
-  width="1" height="1">` with an **affine matrix transform**
-  (`tileTransform`) that maps the unit square to the rotated ground
-  parallelogram. Works because orthographic projection preserves
-  parallelism — a planar rectangle stays a parallelogram under any
-  rotation, so an affine matrix is sufficient. Faded out as pitch
-  approaches 90° (`tileOpacity` between `TILE_FADE_START` and
-  `TILE_FADE_END`).
-- **Earth block**: four side polygons drop `BLOCK_DEPTH_M` (100m)
-  below the OSM ground at the same lat/lon corners as the tile image,
-  sorted back-to-front. Light-beige fill (`#f0e6d6`, stroke `#d4c5ad`)
-  gives the ground the feel of sitting on actual terrain volume rather
-  than a paper map. Shares `tileOpacity` so the whole "ground" fades
-  together at high pitch.
-- **Anchor lines** (renamed from "drop lines"): two layers of vertical
-  drops from the route surface to `refFrame.minEle`. The thin sample
-  layer (every `ANCHOR_STEP_M = 250m`, neutral 12% opacity) gives a
-  density independent of GPX point density. The thicker per-bin
-  boundary layer is colored by the bin that *ends* at each boundary,
-  so the last point of the segment is always anchored — the start dot
-  already pins the start.
-- **Slice clamping**: `slicedPoints` uses `findPointAtDistance` to
-  interpolate exact start/end points instead of stopping at the last
-  GPX point ≤ `endDistM`. Without this, the route polyline + start/end
-  dots end at the last GPX vertex while distance-driven features
-  (anchor lines, hover) interpolate to the true segment end, and the
-  two visibly diverge.
+The non-obvious bits worth knowing at the app level:
+
+- **Projection is orthographic** and `depth` (rotated z) drives
+  painter's-algorithm ordering for polyline runs and earth-block faces.
+- **OSM ground via an affine transform.** Orthographic projection
+  preserves parallelism, so the planar tile-image rectangle stays a
+  parallelogram under any rotation — one affine matrix places it,
+  rather than per-pixel resampling.
+- **Two anchor passes.** A thin uniform-density layer steps every 250m
+  for visual depth cues independent of GPX point density. A thicker
+  coloured layer fires at every bin boundary, which is also what pins
+  the segment end (the thin pass stops on overshoot, so its last
+  anchor isn't always at `endDistM`).
+- **Slice clamping.** `slicedPoints` interpolates exact start/end
+  points via `findPointAtDistance` so the route polyline ends in the
+  same spot as distance-driven features (anchor lines, hover);
+  otherwise the two visibly diverge.
 
 ### SegmentMap controls and 2D/3D toggle
 
@@ -228,4 +214,7 @@ NOT bind both ends to the same variable, that would loop.
 M1 scaffold · M2 GPX upload + parse · M3 route viewer · M4 two-marker
 crop · M5 save / list / delete segments · M6 CF-style image + export ·
 M7 route/segment management (rename + delete + adjust) · M8 SegmentMap
-3D topo view (OSM ground, anchor lines, 2D/3D toggle, resizable).
+3D topo view (OSM ground, anchor lines, 2D/3D toggle, resizable) ·
+M9 topo split into testable modules under `src/lib/topo/` (projection,
+tiles, geometry, viewport) + vitest suite covering elevation/geo/slug
+helpers and all four topo modules (~120 tests).
