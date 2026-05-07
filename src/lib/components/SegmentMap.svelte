@@ -33,6 +33,14 @@
 		type MapSource,
 		type TileImage
 	} from '$lib/topo/tiles.js';
+	import {
+		applyZoomAtCursor,
+		clampViewport,
+		defaultViewport,
+		formatViewBox,
+		isZoomedOrPanned,
+		type Viewport
+	} from '$lib/topo/viewport.js';
 	import type { RoutePoint } from '$lib/types.js';
 
 	type Props = {
@@ -54,9 +62,6 @@
 
 	const STROKE = 6;
 	const DRAG_THRESHOLD_PX = 4;
-	const ZOOM_FACTOR = 0.85;
-	const MIN_VIEW_FRAC = 0.05;
-	const MAX_VIEW_FRAC = 3;
 	const HOVER_PX = 24;
 	// Window (metres) for the hover tooltip's "precise" grade. Centred on
 	// distM, so the grade is averaged over distM ± HOVER_GRADE_WINDOW_M / 2.
@@ -283,51 +288,23 @@
 	);
 
 	// Viewport (visible window in viewBox space).
-	let viewport = $state<{ x: number; y: number; w: number; h: number } | null>(null);
+	let viewport = $state<Viewport | null>(null);
 
 	$effect(() => {
 		if (viewport == null && refFrame != null) {
-			viewport = { x: 0, y: 0, w: dimensions.W, h: dimensions.H };
+			viewport = defaultViewport(dimensions);
 		}
 	});
 
-	const isZoomed = $derived(
-		viewport != null &&
-			(Math.abs(viewport.x) > 0.5 ||
-				Math.abs(viewport.y) > 0.5 ||
-				Math.abs(viewport.w - dimensions.W) > 0.5 ||
-				Math.abs(viewport.h - dimensions.H) > 0.5)
-	);
-
-	function clampViewportXY(v: { x: number; y: number; w: number; h: number }) {
-		// Allow panning up to half the natural canvas past each edge so
-		// rotated/tilted content that overflows the original box stays
-		// reachable. If the viewport already covers natural+margin (very
-		// zoomed out) we just center.
-		const marginX = dimensions.W * 0.5;
-		const marginY = dimensions.H * 0.5;
-		const minX = -marginX;
-		const maxX = dimensions.W + marginX - v.w;
-		const minY = -marginY;
-		const maxY = dimensions.H + marginY - v.h;
-		const x =
-			maxX < minX ? (dimensions.W - v.w) / 2 : Math.max(minX, Math.min(maxX, v.x));
-		const y =
-			maxY < minY ? (dimensions.H - v.h) / 2 : Math.max(minY, Math.min(maxY, v.y));
-		return { x, y, w: v.w, h: v.h };
-	}
+	const isZoomed = $derived(isZoomedOrPanned(viewport, dimensions));
 	const isRotated = $derived(yaw !== 0 || pitch !== 0);
 	const isViewModified = $derived(isZoomed || isRotated);
 
-	const viewBoxAttr = $derived(
-		viewport
-			? `${viewport.x} ${viewport.y} ${viewport.w} ${viewport.h}`
-			: `0 0 ${dimensions.W} ${dimensions.H}`
-	);
+	const viewBoxAttr = $derived(formatViewBox(viewport, dimensions));
 
 	function resetView(e?: Event) {
 		e?.stopPropagation();
-		viewport = { x: 0, y: 0, w: dimensions.W, h: dimensions.H };
+		viewport = defaultViewport(dimensions);
 		yaw = 0;
 		pitch = 0;
 	}
@@ -339,17 +316,7 @@
 		if (rect.width <= 0 || rect.height <= 0) return;
 		const relX = (e.clientX - rect.left) / rect.width;
 		const relY = (e.clientY - rect.top) / rect.height;
-		const cursorSvgX = viewport.x + relX * viewport.w;
-		const cursorSvgY = viewport.y + relY * viewport.h;
-		const factor = e.deltaY < 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR;
-		const minW = dimensions.W * MIN_VIEW_FRAC;
-		const maxW = dimensions.W * MAX_VIEW_FRAC;
-		const newW = Math.max(minW, Math.min(maxW, viewport.w * factor));
-		const actualFactor = newW / viewport.w;
-		const newH = viewport.h * actualFactor;
-		const newX = cursorSvgX - relX * newW;
-		const newY = cursorSvgY - relY * newH;
-		viewport = clampViewportXY({ x: newX, y: newY, w: newW, h: newH });
+		viewport = applyZoomAtCursor(viewport, dimensions, relX, relY, e.deltaY);
 	}
 
 	type DragMode = 'pan' | 'rotate';
@@ -412,7 +379,10 @@
 		const dySvg = dy * (dragStart.vp.h / rect.height);
 		const newX = dragStart.vp.x - dxSvg;
 		const newY = dragStart.vp.y - dySvg;
-		viewport = clampViewportXY({ x: newX, y: newY, w: dragStart.vp.w, h: dragStart.vp.h });
+		viewport = clampViewport(
+			{ x: newX, y: newY, w: dragStart.vp.w, h: dragStart.vp.h },
+			dimensions
+		);
 	}
 
 	function onDocPointerUp() {
