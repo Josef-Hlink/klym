@@ -457,7 +457,7 @@
 				{hover.bucket.grade.toFixed(1)}%
 			</span>
 			<span class="tabular-nums text-neutral-700">
-				{fmtKm(hover.pt.cumDistM)} · {fmtM(hover.pt.ele)}
+				{fmtKm(hover.pt.cumDistM)} · {fmtM(hover.pt.ele)}{#if hover.pt.hr != null}{' · '}{Math.round(hover.pt.hr)} bpm{/if}{#if hover.pt.power != null}{' · '}{Math.round(hover.pt.power)} W{/if}{#if hover.pt.spd != null}{' · '}{(hover.pt.spd * 3.6).toFixed(1)} km/h{/if}{#if hover.pt.cad != null}{' · '}{Math.round(hover.pt.cad)} rpm{/if}
 			</span>
 		</div>
 	{/if}

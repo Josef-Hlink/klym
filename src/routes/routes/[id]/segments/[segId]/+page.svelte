@@ -1,6 +1,7 @@
 <script lang="ts">
 	import SegmentProfile, { type GradeLabelMode } from '$lib/components/SegmentProfile.svelte';
 	import SegmentMap from '$lib/components/SegmentMap.svelte';
+	import ActivityBadge from '$lib/components/ActivityBadge.svelte';
 	import { computeAdaptiveBins, computeBins, computeCropStats, gradeColor } from '$lib/elevation.js';
 	import { fmtKm, fmtM } from '$lib/format.js';
 	import type { PageProps } from './$types.js';
@@ -184,7 +185,10 @@
 	>
 	<header class="mt-4 mb-6 flex items-end justify-between gap-4">
 		<div>
-			<h1 class="text-2xl font-semibold tracking-tight">{segment.name}</h1>
+			<div class="flex items-center gap-2">
+				<h1 class="text-2xl font-semibold tracking-tight">{segment.name}</h1>
+				<ActivityBadge points={route.points} />
+			</div>
 			<p class="mt-1 text-xs text-neutral-500"><code>{segment.id}</code></p>
 		</div>
 		<div bind:this={exportMenuEl} class="relative">

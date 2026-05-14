@@ -49,6 +49,28 @@ describe('findPointAtDistance', () => {
 		expect(p.ele).toBeCloseTo(2.5, 10);
 		expect(p.lat).toBeCloseTo(45 + 2.5 * 0.001, 10);
 	});
+
+	it('lerps activity streams when both neighbors have them', () => {
+		const route: RoutePoint[] = [
+			{ lat: 0, lon: 0, ele: 0, cumDistM: 0, hr: 100, power: 200, cad: 80, spd: 5 },
+			{ lat: 0, lon: 0, ele: 10, cumDistM: 100, hr: 140, power: 240, cad: 90, spd: 7 }
+		];
+		const p = findPointAtDistance(route, 50);
+		expect(p.hr).toBeCloseTo(120, 10);
+		expect(p.power).toBeCloseTo(220, 10);
+		expect(p.cad).toBeCloseTo(85, 10);
+		expect(p.spd).toBeCloseTo(6, 10);
+	});
+
+	it('omits streams when either neighbor lacks them', () => {
+		const route: RoutePoint[] = [
+			{ lat: 0, lon: 0, ele: 0, cumDistM: 0, hr: 100 },
+			{ lat: 0, lon: 0, ele: 10, cumDistM: 100 }
+		];
+		const p = findPointAtDistance(route, 50);
+		expect(p.hr).toBeUndefined();
+		expect(p.power).toBeUndefined();
+	});
 });
 
 describe('gradeAtDistance', () => {

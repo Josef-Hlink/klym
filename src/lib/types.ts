@@ -4,6 +4,10 @@ export type RoutePoint = {
 	ele: number;
 	cumDistM: number;
 	time?: string;
+	hr?: number;
+	power?: number;
+	cad?: number;
+	spd?: number;
 };
 
 export type RouteBounds = {

@@ -60,6 +60,33 @@
 
 	const bins = $derived(binsProp ?? computeBins(points, startDistM, endDistM, binSizeM));
 
+	// Per-bin averages of optional activity streams. Each bin only carries a
+	// metric if at least one point in its [startM, endM] range had it; we use
+	// raw GPX points (not interpolated) so a sparse stream doesn't get smeared.
+	type BinStreams = { hr?: number; power?: number; cad?: number; spd?: number };
+	const binStreams = $derived.by<BinStreams[]>(() => {
+		return bins.map((bin) => {
+			let hrSum = 0, hrN = 0;
+			let powSum = 0, powN = 0;
+			let cadSum = 0, cadN = 0;
+			let spdSum = 0, spdN = 0;
+			for (const p of points) {
+				if (p.cumDistM < bin.startM) continue;
+				if (p.cumDistM > bin.endM) break;
+				if (p.hr != null) { hrSum += p.hr; hrN++; }
+				if (p.power != null) { powSum += p.power; powN++; }
+				if (p.cad != null) { cadSum += p.cad; cadN++; }
+				if (p.spd != null) { spdSum += p.spd; spdN++; }
+			}
+			const out: BinStreams = {};
+			if (hrN > 0) out.hr = hrSum / hrN;
+			if (powN > 0) out.power = powSum / powN;
+			if (cadN > 0) out.cad = cadSum / cadN;
+			if (spdN > 0) out.spd = spdSum / spdN;
+			return out;
+		});
+	});
+
 	const externalHoverIdx = $derived.by(() => {
 		if (externalHoverDistM == null) return -1;
 		const d = externalHoverDistM;
@@ -405,6 +432,7 @@
 
 {#if hover && bins[hover.idx]}
 	{@const bin = bins[hover.idx]}
+	{@const s = binStreams[hover.idx] ?? {}}
 	{@const aKm = (bin.startM - startDistM) / 1000}
 	{@const bKm = (bin.endM - startDistM) / 1000}
 	{@const lenM = Math.round(bin.endM - bin.startM)}
@@ -432,9 +460,15 @@
 				{bin.grade.toFixed(1)}% <span class="text-neutral-400">({gainM >= 0 ? '+' : ''}{gainM} m)</span>
 			</span>
 		</div>
+		{#if s.hr != null || s.power != null || s.spd != null || s.cad != null}
+			<div class="mt-0.5 tabular-nums text-neutral-300">
+				{#if s.hr != null}{Math.round(s.hr)} bpm{/if}{#if s.power != null}{s.hr != null ? ' · ' : ''}{Math.round(s.power)} W{/if}{#if s.spd != null}{s.hr != null || s.power != null ? ' · ' : ''}{(s.spd * 3.6).toFixed(1)} km/h{/if}{#if s.cad != null}{s.hr != null || s.power != null || s.spd != null ? ' · ' : ''}{Math.round(s.cad)} rpm{/if}
+			</div>
+		{/if}
 	</div>
 {:else if externalHoverIdx >= 0 && bins[externalHoverIdx] && binAreas[externalHoverIdx]}
 	{@const bin = bins[externalHoverIdx]}
+	{@const s = binStreams[externalHoverIdx] ?? {}}
 	{@const area = binAreas[externalHoverIdx]}
 	{@const aKm = (bin.startM - startDistM) / 1000}
 	{@const bKm = (bin.endM - startDistM) / 1000}
@@ -468,6 +502,11 @@
 				{bin.grade.toFixed(1)}% <span class="text-neutral-400">({gainM >= 0 ? '+' : ''}{gainM} m)</span>
 			</span>
 		</div>
+		{#if s.hr != null || s.power != null || s.spd != null || s.cad != null}
+			<div class="mt-0.5 tabular-nums text-neutral-300">
+				{#if s.hr != null}{Math.round(s.hr)} bpm{/if}{#if s.power != null}{s.hr != null ? ' · ' : ''}{Math.round(s.power)} W{/if}{#if s.spd != null}{s.hr != null || s.power != null ? ' · ' : ''}{(s.spd * 3.6).toFixed(1)} km/h{/if}{#if s.cad != null}{s.hr != null || s.power != null || s.spd != null ? ' · ' : ''}{Math.round(s.cad)} rpm{/if}
+			</div>
+		{/if}
 	</div>
 {/if}
 </div>

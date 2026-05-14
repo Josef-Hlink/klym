@@ -3,6 +3,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import RouteMap from '$lib/components/RouteMap.svelte';
 	import ElevationChart from '$lib/components/ElevationChart.svelte';
+	import ActivityBadge from '$lib/components/ActivityBadge.svelte';
 	import { computeCropStats, gradeColor } from '$lib/elevation.js';
 	import { fmtKm, fmtM } from '$lib/format.js';
 	import type { PageProps } from './$types.js';
@@ -194,7 +195,10 @@
 	<a href="/" class="text-sm text-neutral-500 hover:text-neutral-900">← All routes</a>
 	<header class="mt-4 mb-6 flex items-end justify-between gap-4">
 		<div>
-			<h1 class="text-2xl font-semibold tracking-tight">{route.name}</h1>
+			<div class="flex items-center gap-2">
+				<h1 class="text-2xl font-semibold tracking-tight">{route.name}</h1>
+				<ActivityBadge points={route.points} />
+			</div>
 			<p class="mt-1 text-xs text-neutral-500"><code>{route.id}</code></p>
 		</div>
 		<dl class="flex gap-6 text-right">

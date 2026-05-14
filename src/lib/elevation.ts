@@ -6,7 +6,31 @@ export type InterpolatedPoint = {
 	ele: number;
 	cumDistM: number;
 	idx: number;
+	hr?: number;
+	power?: number;
+	cad?: number;
+	spd?: number;
 };
+
+type Streams = { hr?: number; power?: number; cad?: number; spd?: number };
+
+function copyStreams(p: RoutePoint): Streams {
+	const out: Streams = {};
+	if (p.hr != null) out.hr = p.hr;
+	if (p.power != null) out.power = p.power;
+	if (p.cad != null) out.cad = p.cad;
+	if (p.spd != null) out.spd = p.spd;
+	return out;
+}
+
+function lerpStreams(a: RoutePoint, b: RoutePoint, t: number): Streams {
+	const out: Streams = {};
+	if (a.hr != null && b.hr != null) out.hr = a.hr + (b.hr - a.hr) * t;
+	if (a.power != null && b.power != null) out.power = a.power + (b.power - a.power) * t;
+	if (a.cad != null && b.cad != null) out.cad = a.cad + (b.cad - a.cad) * t;
+	if (a.spd != null && b.spd != null) out.spd = a.spd + (b.spd - a.spd) * t;
+	return out;
+}
 
 export function findPointAtDistance(
 	points: RoutePoint[],
@@ -25,7 +49,16 @@ export function findPointAtDistance(
 		else hi = mid;
 	}
 	const b = points[lo];
-	if (lo === 0) return { lat: b.lat, lon: b.lon, ele: b.ele, cumDistM: b.cumDistM, idx: 0 };
+	if (lo === 0) {
+		return {
+			lat: b.lat,
+			lon: b.lon,
+			ele: b.ele,
+			cumDistM: b.cumDistM,
+			idx: 0,
+			...copyStreams(b)
+		};
+	}
 	const a = points[lo - 1];
 	const span = b.cumDistM - a.cumDistM;
 	const t = span > 0 ? (target - a.cumDistM) / span : 0;
@@ -34,7 +67,8 @@ export function findPointAtDistance(
 		lon: a.lon + (b.lon - a.lon) * t,
 		ele: a.ele + (b.ele - a.ele) * t,
 		cumDistM: target,
-		idx: lo
+		idx: lo,
+		...lerpStreams(a, b, t)
 	};
 }
 
