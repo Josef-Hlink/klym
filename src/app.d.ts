@@ -3,7 +3,10 @@
 declare global {
 	namespace App {
 		// interface Error {}
-		// interface Locals {}
+		interface Locals {
+			/** Anonymous per-visitor id from the klym_sid cookie; scopes all storage. */
+			owner: string;
+		}
 		// interface PageData {}
 		// interface PageState {}
 		// interface Platform {}

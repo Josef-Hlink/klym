@@ -1,78 +1,103 @@
-import { mkdir, readdir, readFile, writeFile, stat, unlink, rm } from 'node:fs/promises';
-import path from 'node:path';
 import type { RouteData, RouteSummary, SegmentData } from '$lib/types.js';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+// In-memory, per-visitor storage. All data is scoped to an `owner` (the
+// anonymous klym_sid session id assigned in hooks.server.ts). Nothing is
+// persisted to disk: a process restart or an idle-session sweep drops it,
+// which is the intended behaviour for the hosted, login-less app.
 
-function routeDir(id: string) {
-	return path.join(DATA_DIR, id);
+interface RouteRecord {
+	route: RouteData;
+	segments: Map<string, SegmentData>;
 }
 
-function segmentsDir(routeId: string) {
-	return path.join(routeDir(routeId), 'segments');
+interface Session {
+	routes: Map<string, RouteRecord>;
+	lastSeen: number;
 }
 
-function segmentFile(routeId: string, segId: string) {
-	return path.join(segmentsDir(routeId), `${segId}.json`);
+// Bounds to keep a single misbehaving visitor (or many visitors) from
+// exhausting memory on a small box. Overflow evicts the oldest entry.
+const SESSION_TTL_MS = 6 * 60 * 60 * 1000; // drop sessions idle > 6h
+const SWEEP_INTERVAL_MS = 30 * 60 * 1000; // check every 30 min
+const MAX_SESSIONS = 200;
+const MAX_ROUTES_PER_SESSION = 50;
+const MAX_SEGMENTS_PER_ROUTE = 100;
+
+const sessions = new Map<string, Session>();
+
+let sweepStarted = false;
+function ensureSweep() {
+	if (sweepStarted) return;
+	sweepStarted = true;
+	const timer = setInterval(() => {
+		const cutoff = Date.now() - SESSION_TTL_MS;
+		for (const [id, s] of sessions) {
+			if (s.lastSeen < cutoff) sessions.delete(id);
+		}
+	}, SWEEP_INTERVAL_MS);
+	// Don't keep the Node process alive solely for the sweep timer.
+	timer.unref?.();
 }
 
-export async function routeExists(id: string): Promise<boolean> {
-	try {
-		await stat(path.join(routeDir(id), 'route.json'));
-		return true;
-	} catch {
-		return false;
+/** Drop the lowest-`getTime` entries of a Map until it fits `max`. */
+function evictOldest<T>(map: Map<string, T>, max: number, getTime: (v: T) => number): void {
+	while (map.size > max) {
+		let oldestKey: string | undefined;
+		let oldestVal = Infinity;
+		for (const [k, v] of map) {
+			const ts = getTime(v);
+			if (ts < oldestVal) {
+				oldestVal = ts;
+				oldestKey = k;
+			}
+		}
+		if (oldestKey === undefined) break;
+		map.delete(oldestKey);
 	}
 }
 
-export async function writeRoute(
-	id: string,
-	gpxText: string,
-	route: RouteData
-): Promise<void> {
-	const dir = routeDir(id);
-	await mkdir(dir, { recursive: true });
-	await writeFile(path.join(dir, 'route.gpx'), gpxText, 'utf8');
-	await writeFile(path.join(dir, 'route.json'), JSON.stringify(route), 'utf8');
-}
-
-export async function deleteRoute(id: string): Promise<boolean> {
-	try {
-		await rm(routeDir(id), { recursive: true, force: true });
-		return true;
-	} catch {
-		return false;
+/** Get (or lazily create) a session and mark it freshly used. */
+function touch(owner: string): Session {
+	ensureSweep();
+	let s = sessions.get(owner);
+	if (!s) {
+		s = { routes: new Map(), lastSeen: Date.now() };
+		sessions.set(owner, s);
+		evictOldest(sessions, MAX_SESSIONS, (v) => v.lastSeen);
+	} else {
+		s.lastSeen = Date.now();
 	}
+	return s;
 }
 
-export async function updateRouteName(id: string, name: string): Promise<boolean> {
-	const route = await readRoute(id);
-	if (!route) return false;
-	route.name = name;
-	await writeFile(path.join(routeDir(id), 'route.json'), JSON.stringify(route), 'utf8');
+export async function routeExists(owner: string, id: string): Promise<boolean> {
+	return touch(owner).routes.has(id);
+}
+
+export async function writeRoute(owner: string, id: string, route: RouteData): Promise<void> {
+	const session = touch(owner);
+	session.routes.set(id, { route, segments: new Map() });
+	evictOldest(session.routes, MAX_ROUTES_PER_SESSION, (v) => Date.parse(v.route.createdAt));
+}
+
+export async function deleteRoute(owner: string, id: string): Promise<boolean> {
+	return touch(owner).routes.delete(id);
+}
+
+export async function updateRouteName(owner: string, id: string, name: string): Promise<boolean> {
+	const rec = touch(owner).routes.get(id);
+	if (!rec) return false;
+	rec.route = { ...rec.route, name };
 	return true;
 }
 
-export async function readRoute(id: string): Promise<RouteData | null> {
-	try {
-		const text = await readFile(path.join(routeDir(id), 'route.json'), 'utf8');
-		return JSON.parse(text) as RouteData;
-	} catch {
-		return null;
-	}
+export async function readRoute(owner: string, id: string): Promise<RouteData | null> {
+	return touch(owner).routes.get(id)?.route ?? null;
 }
 
-export async function listRoutes(): Promise<RouteSummary[]> {
-	let entries: string[];
-	try {
-		entries = await readdir(DATA_DIR);
-	} catch {
-		return [];
-	}
+export async function listRoutes(owner: string): Promise<RouteSummary[]> {
 	const summaries: RouteSummary[] = [];
-	for (const id of entries) {
-		const route = await readRoute(id);
-		if (!route) continue;
+	for (const { route } of touch(owner).routes.values()) {
 		const { points, bounds, ...rest } = route;
 		summaries.push({ ...rest, pointCount: points.length });
 	}
@@ -80,71 +105,52 @@ export async function listRoutes(): Promise<RouteSummary[]> {
 	return summaries;
 }
 
-export async function segmentExists(routeId: string, segId: string): Promise<boolean> {
-	try {
-		await stat(segmentFile(routeId, segId));
-		return true;
-	} catch {
-		return false;
-	}
+export async function segmentExists(
+	owner: string,
+	routeId: string,
+	segId: string
+): Promise<boolean> {
+	return touch(owner).routes.get(routeId)?.segments.has(segId) ?? false;
 }
 
-export async function readSegment(routeId: string, segId: string): Promise<SegmentData | null> {
-	try {
-		const text = await readFile(segmentFile(routeId, segId), 'utf8');
-		return JSON.parse(text) as SegmentData;
-	} catch {
-		return null;
-	}
+export async function readSegment(
+	owner: string,
+	routeId: string,
+	segId: string
+): Promise<SegmentData | null> {
+	return touch(owner).routes.get(routeId)?.segments.get(segId) ?? null;
 }
 
-export async function writeSegment(segment: SegmentData): Promise<void> {
-	await mkdir(segmentsDir(segment.routeId), { recursive: true });
-	await writeFile(
-		segmentFile(segment.routeId, segment.id),
-		JSON.stringify(segment),
-		'utf8'
-	);
+export async function writeSegment(owner: string, segment: SegmentData): Promise<void> {
+	const rec = touch(owner).routes.get(segment.routeId);
+	if (!rec) return;
+	rec.segments.set(segment.id, segment);
+	evictOldest(rec.segments, MAX_SEGMENTS_PER_ROUTE, (v) => Date.parse(v.createdAt));
 }
 
-export async function deleteSegment(routeId: string, segId: string): Promise<boolean> {
-	try {
-		await unlink(segmentFile(routeId, segId));
-		return true;
-	} catch {
-		return false;
-	}
+export async function deleteSegment(
+	owner: string,
+	routeId: string,
+	segId: string
+): Promise<boolean> {
+	return touch(owner).routes.get(routeId)?.segments.delete(segId) ?? false;
 }
 
 export async function updateSegment(
+	owner: string,
 	routeId: string,
 	segId: string,
 	patch: Partial<Pick<SegmentData, 'name' | 'startDistM' | 'endDistM' | 'binSizeM'>>
 ): Promise<boolean> {
-	const seg = await readSegment(routeId, segId);
-	if (!seg) return false;
-	const next: SegmentData = { ...seg, ...patch };
-	await writeFile(segmentFile(routeId, segId), JSON.stringify(next), 'utf8');
+	const segments = touch(owner).routes.get(routeId)?.segments;
+	const seg = segments?.get(segId);
+	if (!segments || !seg) return false;
+	segments.set(segId, { ...seg, ...patch });
 	return true;
 }
 
-export async function listSegments(routeId: string): Promise<SegmentData[]> {
-	let files: string[];
-	try {
-		files = await readdir(segmentsDir(routeId));
-	} catch {
-		return [];
-	}
-	const segments: SegmentData[] = [];
-	for (const f of files) {
-		if (!f.endsWith('.json')) continue;
-		try {
-			const text = await readFile(path.join(segmentsDir(routeId), f), 'utf8');
-			segments.push(JSON.parse(text) as SegmentData);
-		} catch {
-			/* skip malformed */
-		}
-	}
-	segments.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-	return segments;
+export async function listSegments(owner: string, routeId: string): Promise<SegmentData[]> {
+	const rec = touch(owner).routes.get(routeId);
+	if (!rec) return [];
+	return [...rec.segments.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }

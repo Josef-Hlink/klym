@@ -11,15 +11,15 @@ import {
 import { slugify } from '$lib/slug.js';
 import type { SegmentData } from '$lib/types.js';
 
-export const load: PageServerLoad = async ({ params }) => {
-	const route = await readRoute(params.id);
+export const load: PageServerLoad = async ({ params, locals }) => {
+	const route = await readRoute(locals.owner, params.id);
 	if (!route) throw error(404, `Route "${params.id}" not found`);
-	const segments = await listSegments(params.id);
+	const segments = await listSegments(locals.owner, params.id);
 	return { route, segments };
 };
 
 export const actions: Actions = {
-	saveSegment: async ({ request, params }) => {
+	saveSegment: async ({ request, params, locals }) => {
 		const form = await request.formData();
 		const name = String(form.get('name') ?? '').trim();
 		const startDistM = Number(form.get('startDistM'));
@@ -45,7 +45,7 @@ export const actions: Actions = {
 				name
 			});
 		}
-		if (await segmentExists(params.id, id)) {
+		if (await segmentExists(locals.owner, params.id, id)) {
 			return fail(409, {
 				scope: 'save',
 				error: `A segment with id "${id}" already exists`,
@@ -62,32 +62,32 @@ export const actions: Actions = {
 			binSizeM: binSizeM > 0 ? binSizeM : 500,
 			createdAt: new Date().toISOString()
 		};
-		await writeSegment(segment);
+		await writeSegment(locals.owner, segment);
 
 		return { scope: 'save', success: true, id };
 	},
 
-	deleteSegment: async ({ request, params }) => {
+	deleteSegment: async ({ request, params, locals }) => {
 		const form = await request.formData();
 		const segId = String(form.get('segId') ?? '').trim();
 		if (!segId) return fail(400, { scope: 'delete', error: 'Missing segment id' });
-		const ok = await deleteSegment(params.id, segId);
+		const ok = await deleteSegment(locals.owner, params.id, segId);
 		if (!ok) return fail(404, { scope: 'delete', error: 'Segment not found' });
 		return { scope: 'delete', success: true, id: segId };
 	},
 
-	renameSegment: async ({ request, params }) => {
+	renameSegment: async ({ request, params, locals }) => {
 		const form = await request.formData();
 		const segId = String(form.get('segId') ?? '').trim();
 		const name = String(form.get('name') ?? '').trim();
 		if (!segId) return fail(400, { scope: 'rename', error: 'Missing segment id' });
 		if (!name) return fail(400, { scope: 'rename', error: 'Name cannot be empty', segId });
-		const ok = await updateSegment(params.id, segId, { name });
+		const ok = await updateSegment(locals.owner, params.id, segId, { name });
 		if (!ok) return fail(404, { scope: 'rename', error: 'Segment not found', segId });
 		return { scope: 'rename', success: true, id: segId };
 	},
 
-	adjustSegment: async ({ request, params }) => {
+	adjustSegment: async ({ request, params, locals }) => {
 		const form = await request.formData();
 		const segId = String(form.get('segId') ?? '').trim();
 		const startDistM = Number(form.get('startDistM'));
@@ -99,7 +99,7 @@ export const actions: Actions = {
 		if (endDistM - startDistM < 10) {
 			return fail(400, { scope: 'adjust', error: 'Selection too short (min 10 m)', segId });
 		}
-		const ok = await updateSegment(params.id, segId, { startDistM, endDistM });
+		const ok = await updateSegment(locals.owner, params.id, segId, { startDistM, endDistM });
 		if (!ok) return fail(404, { scope: 'adjust', error: 'Segment not found', segId });
 		return { scope: 'adjust', success: true, id: segId };
 	}

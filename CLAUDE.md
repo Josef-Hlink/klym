@@ -18,7 +18,9 @@ Remote: `Josef-Hlink/klym` (private, MIT).
 - MapLibre GL 5 (OSM raster tiles, no token required)
 - uPlot 1.6 (interactive elevation chart in the route viewer)
 - `fast-xml-parser` (GPX parsing server-side)
-- Node `fs/promises` for persistence — no database
+- In-memory per-session store — no database, no disk (see Storage below)
+- `@sveltejs/adapter-node` — emits `build/` (`node build/index.js`) for
+  self-hosting; deployed via a Nix flake + NixOS module (see `HOSTING.md`)
 - Vitest 4 for the pure-helper tests under `src/lib/`
 
 Package manager is **pnpm**. Use `pnpm <script>`, not `pnpm exec <tool>`.
@@ -45,25 +47,39 @@ Package manager is **pnpm**. Use `pnpm <script>`, not `pnpm exec <tool>`.
 Server loads (`+page.server.ts`) still run server-side even with
 `ssr = false`; only HTML rendering is skipped.
 
-## Storage layout
+## Storage (in-memory, per-visitor)
+
+`src/lib/server/storage.ts` holds everything in a process-lifetime
+`Map`, scoped by `owner` (the anonymous `klym_sid` session id assigned
+in `src/hooks.server.ts` → `locals.owner`). Shape:
 
 ```
-data/<route-id>/
-  route.gpx            # raw upload
-  route.json           # { id, name, points, totalDistM, totalAscentM, bounds, createdAt }
-  segments/<seg-id>.json   # { id, routeId, name, startDistM, endDistM, binSizeM, createdAt }
+sessions: owner -> {
+  lastSeen,
+  routes: routeId -> { route: RouteData, segments: segId -> SegmentData }
+}
 ```
 
-`data/` is gitignored and created lazily. Ids are slugified names,
-unique per scope (routes globally, segments per route). Conflicts return
-409 with an inline error.
+Nothing touches disk. Each visitor is isolated; data is dropped when the
+session cookie expires, after ~6h idle (the sweep), or on any restart —
+the intended behaviour for the hosted, login-less app. Every storage
+function takes `owner` as its first arg and is still `async` (call sites
+just `await` as before). Caps at the top of the file
+(`MAX_SESSIONS`/`MAX_ROUTES_PER_SESSION`/etc.) bound memory; overflow
+evicts the oldest. Ids are slugified names, unique per scope (routes per
+session, segments per route); conflicts return 409 inline.
+
+> Was filesystem-backed (`data/<route-id>/…`) through M9. The old `data/`
+> dir is now orphaned (still gitignored). See `HOSTING.md`.
 
 ## Key design decisions
 
 - **Manual crop, not auto-detect.** The two-marker UX is the whole
   point; don't propose climb-detection algorithms.
-- **Filesystem storage.** Keep it that way unless the user asks for
-  auth / multi-user / cloud.
+- **In-memory, per-session, ephemeral storage.** Keep it that way unless
+  the user asks for persistence. Hosted multi-user without login: each
+  visitor gets an isolated sandbox via the `klym_sid` cookie and loses it
+  when they leave. See `HOSTING.md` and the Storage section above.
 - **500m default bucket.** The CF bar resolution. Bin size is configurable
   per segment view but not per route.
 - **50m elevation smoothing for cumulative ascent.** Raw GPS elevation
@@ -217,4 +233,17 @@ M7 route/segment management (rename + delete + adjust) · M8 SegmentMap
 3D topo view (OSM ground, anchor lines, 2D/3D toggle, resizable) ·
 M9 topo split into testable modules under `src/lib/topo/` (projection,
 tiles, geometry, viewport) + vitest suite covering elevation/geo/slug
-helpers and all four topo modules (~120 tests).
+helpers and all four topo modules (~120 tests) · M10 self-host prep:
+adapter-node, anonymous per-visitor sessions (`hooks.server.ts`),
+in-memory owner-scoped storage, Nix flake + NixOS module + Cloudflare
+Tunnel guide (`HOSTING.md`).
+
+## Next milestone (planned)
+
+M11 Strava sign-in + route/activity import (OAuth2). Routes via
+`/routes/{id}/export_gpx` reuse `parseGpx` as-is; activities via
+`/activities/{id}/streams` map to `RoutePoint[]` and carry HR/power/
+cadence natively. Needs the live HTTPS callback URL the tunnel provides.
+Caveat: Strava caps new apps to 1 athlete (you) until app review
+(~7–10 business days); ephemeral storage already satisfies their
+no-long-term-retention terms.

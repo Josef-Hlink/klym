@@ -13,12 +13,12 @@ import type { RouteData } from '$lib/types.js';
 
 const MAX_GPX_BYTES = 15 * 1024 * 1024;
 
-export const load: PageServerLoad = async () => {
-	return { routes: await listRoutes() };
+export const load: PageServerLoad = async ({ locals }) => {
+	return { routes: await listRoutes(locals.owner) };
 };
 
 export const actions: Actions = {
-	upload: async ({ request }) => {
+	upload: async ({ request, locals }) => {
 		const form = await request.formData();
 		const rawName = String(form.get('name') ?? '').trim();
 		const file = form.get('file');
@@ -39,7 +39,7 @@ export const actions: Actions = {
 				name: rawName
 			});
 		}
-		if (await routeExists(id)) {
+		if (await routeExists(locals.owner, id)) {
 			return fail(409, {
 				scope: 'upload',
 				error: `A route with id "${id}" already exists`,
@@ -65,27 +65,27 @@ export const actions: Actions = {
 			bounds: parsed.bounds,
 			createdAt: new Date().toISOString()
 		};
-		await writeRoute(id, gpxText, route);
+		await writeRoute(locals.owner, id, route);
 
 		return { scope: 'upload', success: true, id };
 	},
 
-	renameRoute: async ({ request }) => {
+	renameRoute: async ({ request, locals }) => {
 		const form = await request.formData();
 		const id = String(form.get('id') ?? '').trim();
 		const name = String(form.get('name') ?? '').trim();
 		if (!id) return fail(400, { scope: 'rename', error: 'Missing route id' });
 		if (!name) return fail(400, { scope: 'rename', error: 'Name cannot be empty', id });
-		const ok = await updateRouteName(id, name);
+		const ok = await updateRouteName(locals.owner, id, name);
 		if (!ok) return fail(404, { scope: 'rename', error: 'Route not found', id });
 		return { scope: 'rename', success: true, id };
 	},
 
-	deleteRoute: async ({ request }) => {
+	deleteRoute: async ({ request, locals }) => {
 		const form = await request.formData();
 		const id = String(form.get('id') ?? '').trim();
 		if (!id) return fail(400, { scope: 'delete', error: 'Missing route id' });
-		const ok = await deleteRoute(id);
+		const ok = await deleteRoute(locals.owner, id);
 		if (!ok) return fail(404, { scope: 'delete', error: 'Route not found', id });
 		return { scope: 'delete', success: true, id };
 	}
