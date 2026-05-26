@@ -233,17 +233,18 @@ M7 route/segment management (rename + delete + adjust) · M8 SegmentMap
 3D topo view (OSM ground, anchor lines, 2D/3D toggle, resizable) ·
 M9 topo split into testable modules under `src/lib/topo/` (projection,
 tiles, geometry, viewport) + vitest suite covering elevation/geo/slug
-helpers and all four topo modules (~120 tests) · M10 self-host prep:
+helpers and all four topo modules (~120 tests) · M10 self-host:
 adapter-node, anonymous per-visitor sessions (`hooks.server.ts`),
-in-memory owner-scoped storage, Nix flake + NixOS module + Cloudflare
-Tunnel guide (`HOSTING.md`).
+in-memory owner-scoped storage, Nix flake + NixOS module + hosting guide
+(`HOSTING.md`); deployed live behind a Cloudflare Tunnel.
 
 ## Next milestone (planned)
 
 M11 Strava sign-in + route/activity import (OAuth2). Routes via
 `/routes/{id}/export_gpx` reuse `parseGpx` as-is; activities via
 `/activities/{id}/streams` map to `RoutePoint[]` and carry HR/power/
-cadence natively. Needs the live HTTPS callback URL the tunnel provides.
+cadence natively. The HTTPS callback URL it needs is already live:
+`https://klym.hlink.dev`.
 Caveat: Strava caps new apps to 1 athlete (you) until app review
 (~7–10 business days); ephemeral storage already satisfies their
 no-long-term-retention terms.

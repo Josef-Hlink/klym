@@ -54,6 +54,11 @@ Copy the JSON somewhere the box's `cloudflared` service can read it, e.g.
 the `cloudflared` user depending on your config). For anything more than a toy
 setup, prefer a secrets manager (sops-nix / agenix) over a plaintext path.
 
+> **Already running a tunnel on this box?** Don't create a second one — reuse
+> it. Add an `ingress` rule for klym's hostname to the existing tunnel and
+> point a CNAME at it with `cloudflared tunnel route dns <TUNNEL_ID> <host>`.
+> One tunnel can serve many hostnames.
+
 ## Step 2 — Pin the dependency hash (one time)
 
 The flake builds klym reproducibly, which means it needs the hash of the
@@ -70,13 +75,24 @@ Paste that `got:` value into `flake.nix` (`pnpmDeps.hash`), then `nix build`
 again to confirm it succeeds. **Commit the hash.** Redo this only when
 `pnpm-lock.yaml` changes.
 
+> **Don't "fix" the pnpm deprecation warnings.** The flake pins
+> `pnpm_10.configHook` + `fetcherVersion = 1` on purpose. Migrating to the
+> top-level `fetchPnpmDeps` / `fetcherVersion = 3` breaks on nixpkgs whose
+> default `pnpm` is v11: the config hook can't find `.fetcher-version`, falls
+> back to v1, and pnpm 11 then can't read the v1 store
+> (`ERR_PNPM_NO_OFFLINE_TARBALL`). The pinned hook bundles its own pnpm, so
+> fetch and install stay consistent. See the comment in `flake.nix`; revisit
+> once that path stabilises (the warnings are harmless until the 26.11 release).
+
 ## Step 3 — Add klym to your system flake
 
 In your machine's `/etc/nixos/flake.nix` (or wherever your config lives):
 
 ```nix
 {
-  inputs.klym.url = "github:Josef-Hlink/klym";   # or path:/srv/klym while iterating
+  # Public repo: "github:OWNER/klym". If the repo is PRIVATE, use git+ssh —
+  # the github: fetcher uses the anon GitHub API, which 404s on private repos.
+  inputs.klym.url = "git+ssh://git@github.com/OWNER/klym?ref=BRANCH";
 
   outputs = { self, nixpkgs, klym, ... }: {
     nixosConfigurations.YOUR_HOST = nixpkgs.lib.nixosSystem {
@@ -88,6 +104,13 @@ In your machine's `/etc/nixos/flake.nix` (or wherever your config lives):
   };
 }
 ```
+
+> **Private input + `sudo nixos-rebuild`:** the rebuild fetches flake inputs
+> as **root**, which has no GitHub SSH key, so a git+ssh input fails with
+> `Permission denied (publickey)`. Fix it by locking as *your* user first:
+> run `nix flake lock` (no sudo) so the input is fetched with your key and
+> pinned into the shared `/nix/store`, commit the updated `flake.lock`, then
+> rebuild — the root build reuses the locked store path and never fetches.
 
 Then, in `configuration.nix`:
 
