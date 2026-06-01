@@ -116,6 +116,44 @@
                 the tunnel.
               '';
             };
+
+            memoryHigh = lib.mkOption {
+              type = lib.types.str;
+              default = "384M";
+              description = ''
+                Soft memory limit (systemd MemoryHigh). Above this the kernel
+                throttles the service and reclaims aggressively, smoothing
+                transient spikes before the hard MemoryMax kill. Set to
+                "infinity" to disable. Keep it below memoryMax.
+              '';
+            };
+
+            memoryMax = lib.mkOption {
+              type = lib.types.str;
+              default = "512M";
+              description = ''
+                Hard memory ceiling (systemd MemoryMax). klym's in-memory store
+                has no byte cap — the storage limits bound counts, not bytes, and
+                a parsed 15 MB GPX is a chunk of memory per route — so a flood of
+                large uploads could otherwise grow unbounded. At this ceiling the
+                kernel OOM-kills klym and Restart=on-failure brings it back with a
+                fresh (empty) store. Raise it if you raise the storage caps in
+                src/lib/server/storage.ts; set "infinity" to disable.
+              '';
+            };
+
+            cpuQuota = lib.mkOption {
+              type = lib.types.str;
+              default = "200%";
+              description = ''
+                CPU ceiling (systemd CPUQuota), in units of one core: "100%" is
+                one core, "200%" two, and so on. klym's server side is light — the
+                only real spike is parsing a large GPX on upload — so this just
+                keeps a flood of concurrent uploads from starving other services
+                on a shared box. "200%" leaves the rest of the cores free; set
+                "infinity" to disable.
+              '';
+            };
           };
 
           config = lib.mkIf cfg.enable {
@@ -137,6 +175,19 @@
                 ExecStart = "${pkgs.nodejs_24}/bin/node ${cfg.package}/lib/klym/build/index.js";
                 WorkingDirectory = "${cfg.package}/lib/klym";
                 Restart = "on-failure";
+
+                # Cap the cgroup so the in-memory store can't take the box down.
+                # On hitting MemoryMax the kernel OOM-kills the service; OOMPolicy
+                # kills the whole cgroup and Restart=on-failure brings it back
+                # with an empty store (the store is ephemeral by design anyway).
+                # If it OOMs repeatedly, systemd's default start-rate limit trips
+                # and leaves it stopped — i.e. the system shuts it down for good
+                # until you intervene, rather than thrashing.
+                MemoryHigh = cfg.memoryHigh;
+                MemoryMax = cfg.memoryMax;
+                OOMPolicy = "kill";
+                # CPU ceiling so a burst of GPX parses can't starve co-tenants.
+                CPUQuota = cfg.cpuQuota;
                 # Storage is in-memory, so the service is stateless and needs no
                 # writable paths — run it locked down under a throwaway user.
                 DynamicUser = true;

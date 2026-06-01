@@ -185,6 +185,42 @@ Defaults live at the top of `src/lib/server/storage.ts`:
 Raise them if your box has the RAM and you trust your audience; keep them low
 if the link is public, since a parsed 15 MB GPX is a chunk of memory per route.
 
+These caps bound *counts*, not *bytes* — they can't stop a flood of large
+uploads from growing the heap. The systemd resource ceiling below is the
+backstop for that.
+
+## Capping memory at the systemd level
+
+The store has no hard byte limit, so the module also caps the service cgroup.
+On NixOS this is just systemd's `MemoryHigh`/`MemoryMax`:
+
+| Option              | Default | Meaning                                            |
+| ------------------- | ------- | -------------------------------------------------- |
+| `services.klym.memoryHigh` | `384M`  | soft limit: throttle + reclaim above this   |
+| `services.klym.memoryMax`  | `512M`  | hard limit: kernel OOM-kills klym at this   |
+| `services.klym.cpuQuota`   | `200%`  | CPU ceiling, in cores (`100%` = one core)   |
+
+When klym crosses `memoryMax` the kernel OOM-kills it; `OOMPolicy = "kill"`
+takes down the whole cgroup and `Restart = on-failure` restarts it with a
+fresh (empty) store — harmless, since storage is ephemeral. If it keeps
+OOMing, systemd's default start-rate limit trips and **leaves it stopped**, so
+a runaway can't thrash the box; you'd `systemctl reset-failed klym` to revive
+it. `cpuQuota` is the matching backstop for a shared box: klym's server side
+is light (the only spike is parsing a large GPX on upload), so `200%` caps a
+burst of concurrent uploads at two cores and leaves the rest for your other
+services. Tune the ceilings to your box and your storage caps:
+
+```nix
+services.klym = {
+  enable = true;
+  origin = "https://klym.example.com";
+  memoryMax = "768M";   # raise if you raised MAX_SESSIONS / MAX_ROUTES_PER_SESSION
+  cpuQuota = "100%";    # tighten to one core if other services are CPU-hungry
+};
+```
+
+Set any of them to `"infinity"` to disable that limit.
+
 ## Not in scope (yet)
 
 - **Strava sign-in / route import** — the next milestone. OAuth needs exactly
