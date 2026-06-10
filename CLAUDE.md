@@ -5,9 +5,10 @@ Context for future Claude sessions working on klym.
 ## What klym is
 
 A local-only, single-user web app that turns GPX files into
-climbfinder.com-style colored-bar climb profile images. Users manually
-select climbs with two markers on a synced map + elevation chart; no
-automatic climb-detection algorithms.
+climbfinder.com-style colored-bar climb profile images. Users select
+climbs with two markers on a synced map + elevation chart; an
+autodetector (`src/lib/climbs.ts`) suggests candidate climbs which the
+user can preview, load into the markers, or save.
 
 Remote: `Josef-Hlink/klym` (private, MIT).
 
@@ -74,8 +75,10 @@ session, segments per route); conflicts return 409 inline.
 
 ## Key design decisions
 
-- **Manual crop, not auto-detect.** The two-marker UX is the whole
-  point; don't propose climb-detection algorithms.
+- **Manual crop first; autodetect assists.** The two-marker UX stays
+  primary. `src/lib/climbs.ts` detects candidate climbs and the route
+  viewer lists them with hover preview / Select / Save actions — it
+  never places markers or saves segments on its own.
 - **In-memory, per-session, ephemeral storage.** Keep it that way unless
   the user asks for persistence. Hosted multi-user without login: each
   visitor gets an isolated sandbox via the `klym_sid` cookie and loses it
@@ -99,6 +102,30 @@ session, segments per route); conflicts return 409 inline.
   the Selection panel stays hidden.
 
 ## Non-obvious technical notes
+
+### Climb autodetection (`src/lib/climbs.ts`)
+
+Pure module, vitest-covered. Pipeline: resample at 25m → moving-average
+smooth → collect runs of steps whose grade clears `climbGrade` → bridge
+short flats/dips (`maxGapM`/`maxGapLossM`, only when the merged stretch
+still averages `minAvgGrade`) → drop candidates under the length / gain
+/ grade / score floors. Three presets (`DETECTION_PRESETS`):
+strict / balanced / sensitive — strict bridges *bigger* gaps (long
+alpine climbs survive their false flats in one piece), sensitive uses
+small gaps so neighboring kickers stay separate. Scoring is
+Strava-style (`lengthM × avgGrade%`, cat 4 at 8 000 up to HC at 80 000,
+categories require ≥ 3% avg) plus a FIETS index; sanity-checked against
+the old `data/` GPX files (Alpe d'Huez comes out 13.9 km @ 8.0%, HC,
+FIETS 9.7).
+
+In the route viewer, detection runs client-side in a `$derived`. The
+"Detected climbs" panel reuses the segment-row hover-preview plumbing
+(both feed one `previewRange`), shades climb bands on the elevation
+chart via the chart's `regions` prop (toggleable, category-tinted),
+and quick-saves through programmatic `fetch('?/saveSegment')` +
+`deserialize` so it shares the server action with the manual flow. A
+climb counts as "saved" when an existing segment matches its bounds
+within 1 m.
 
 ### uPlot cursor/value offsets
 

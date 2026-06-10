@@ -10,6 +10,8 @@
 	const CHART_H = 200;
 	const BADGE_GUTTER = 24;
 
+	type ChartRegion = { startM: number; endM: number; color: string };
+
 	type Props = {
 		points: RoutePoint[];
 		hoverDistM: number | null;
@@ -19,6 +21,7 @@
 		onRemoveMarker?: (which: 'A' | 'B') => void;
 		onMoveMarker?: (which: 'A' | 'B', distM: number) => void;
 		binSizeM?: number;
+		regions?: ChartRegion[];
 	};
 	let {
 		points,
@@ -28,7 +31,8 @@
 		onPlaceMarker,
 		onRemoveMarker,
 		onMoveMarker,
-		binSizeM = 500
+		binSizeM = 500,
+		regions = []
 	}: Props = $props();
 
 	let wrapperEl: HTMLDivElement | null = $state(null);
@@ -91,6 +95,20 @@
 		return { left, width };
 	});
 
+	const regionRects = $derived.by(() => {
+		if (regions.length === 0 || !plotBounds) return [];
+		const out: { left: number; width: number; color: string }[] = [];
+		for (const r of regions) {
+			const aRaw = distToPx(r.startM);
+			const bRaw = distToPx(r.endM);
+			if (aRaw == null || bRaw == null) continue;
+			const left = Math.max(Math.min(aRaw, bRaw), plotBounds.left);
+			const right = Math.min(Math.max(aRaw, bRaw), plotBounds.right);
+			if (right - left < 1) continue;
+			out.push({ left, width: right - left, color: r.color });
+		}
+		return out;
+	});
 
 	onMount(() => {
 		if (!container) return;
@@ -382,6 +400,17 @@
 			Reset zoom
 		</button>
 	{/if}
+
+	{#each regionRects as r, i (i)}
+		<div
+			class="pointer-events-none absolute"
+			style:left="{r.left}px"
+			style:width="{r.width}px"
+			style:top="0"
+			style:height="{CHART_H}px"
+			style:background-color={r.color}
+		></div>
+	{/each}
 
 	{#if cropRange}
 		<div
