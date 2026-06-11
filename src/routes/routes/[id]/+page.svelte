@@ -46,6 +46,7 @@
 	// preview (hover), load into the markers (Select) or save directly.
 	const SENSITIVITIES: SensitivityPreset[] = ['strict', 'balanced', 'sensitive'];
 	let sensitivity = $state<SensitivityPreset>('balanced');
+	let climbsPanelOpen = $state(true);
 	let showClimbBands = $state(true);
 	let hoveredClimbIdx = $state<number | null>(null);
 	let savingClimbIdx = $state<number | null>(null);
@@ -114,6 +115,11 @@
 		sensitivity = preset;
 		hoveredClimbIdx = null;
 		climbError = null;
+	}
+
+	function toggleClimbsPanel() {
+		climbsPanelOpen = !climbsPanelOpen;
+		hoveredClimbIdx = null;
 	}
 
 	async function postSaveClimb(c: DetectedClimb, idx: number): Promise<boolean> {
@@ -558,11 +564,20 @@
 		{/if}
 
 		<div class="rounded-lg border border-neutral-200 bg-white">
-			<div class="flex flex-wrap items-center justify-between gap-2 px-4 pt-4 pb-2">
-				<h3 class="flex items-center gap-1.5 text-sm font-medium uppercase tracking-wide text-neutral-500">
-					{@render iconMountain()}
-					Detected climbs ({detectedClimbs.length})
+			<div class="flex flex-wrap items-center justify-between gap-2 px-4 pt-4 {climbsPanelOpen ? 'pb-2' : 'pb-4'}">
+				<h3 class="text-sm font-medium uppercase tracking-wide">
+					<button
+						type="button"
+						aria-expanded={climbsPanelOpen}
+						onclick={toggleClimbsPanel}
+						class="flex items-center gap-1.5 text-neutral-500 hover:text-neutral-900"
+					>
+						{@render iconChevron(climbsPanelOpen)}
+						{@render iconMountain()}
+						Detected climbs ({detectedClimbs.length})
+					</button>
 				</h3>
+				{#if climbsPanelOpen}
 				<div class="flex items-center gap-2">
 					<div class="flex overflow-hidden rounded-md border border-neutral-300">
 						{#each SENSITIVITIES as preset (preset)}
@@ -601,7 +616,9 @@
 						</button>
 					{/if}
 				</div>
+				{/if}
 			</div>
+			{#if climbsPanelOpen}
 			{#if climbError}
 				<p class="mx-4 mb-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700">{climbError}</p>
 			{/if}
@@ -704,6 +721,7 @@
 						</li>
 					{/each}
 				</ul>
+			{/if}
 			{/if}
 		</div>
 
@@ -946,6 +964,12 @@
 	<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 		<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
 		<path d="M3 3v5h5" />
+	</svg>
+{/snippet}
+
+{#snippet iconChevron(open: boolean)}
+	<svg class="h-3.5 w-3.5 shrink-0 transition-transform {open ? 'rotate-90' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<polyline points="9 6 15 12 9 18" />
 	</svg>
 {/snippet}
 
