@@ -66,7 +66,9 @@ describe('detectClimbs', () => {
 		expect(c.category).toBe('2');
 	});
 
-	it('bridges a short dip inside a long climb', () => {
+	it('bridges a false flat seamlessly — one climb, no parts', () => {
+		// A short, near-lossless breather is tier 1: the climb never really
+		// stopped, so it must not grow a parts expander.
 		const route = legsRoute([
 			{ lenM: 3000, grade: 7 },
 			{ lenM: 200, grade: -1 },
@@ -75,15 +77,21 @@ describe('detectClimbs', () => {
 		const climbs = detectClimbs(route);
 		expect(climbs).toHaveLength(1);
 		expect(climbs[0].lengthM).toBeGreaterThan(5900);
+		expect(climbs[0].parts).toBeUndefined();
 	});
 
-	it('exposes both halves of a bridged climb as parts', () => {
+	it('joins two climbs across a real dip and exposes them as parts', () => {
+		// 800 m at -5% is too long/lossy for tier 1, but both sides qualify
+		// on their own, so tier 2 composes A, B, and A+B.
 		const route = legsRoute([
 			{ lenM: 3000, grade: 7 },
-			{ lenM: 200, grade: -1 },
+			{ lenM: 800, grade: -5 },
 			{ lenM: 3000, grade: 7 }
 		]);
-		const [climb] = detectClimbs(route);
+		const climbs = detectClimbs(route);
+		expect(climbs).toHaveLength(1);
+		const climb = climbs[0];
+		expect(climb.lengthM).toBeGreaterThan(6500);
 		expect(climb.parts).toHaveLength(2);
 		const [a, b] = climb.parts!;
 		// Parts nest inside the parent, stay ordered, and skip the dip.
@@ -99,17 +107,50 @@ describe('detectClimbs', () => {
 		}
 	});
 
-	it('omits parts when only one constituent clears the filters', () => {
-		// The 400 m tail after the dip is too short/small to stand alone
-		// (balanced floors: 500 m / 40 m gain), so no parts are attached.
+	it('joins two real climbs across a 2 km descent', () => {
+		// The headline tier-2 case: a genuine descent between two genuine
+		// climbs resolves to one parent with two subclimbs.
+		const route = legsRoute([
+			{ lenM: 5000, grade: 7 },
+			{ lenM: 2000, grade: -5 },
+			{ lenM: 5000, grade: 7 }
+		]);
+		const climbs = detectClimbs(route);
+		expect(climbs).toHaveLength(1);
+		expect(climbs[0].parts).toHaveLength(2);
+		// Net stats span the descent: ~700 m up, ~100 m back down.
+		expect(climbs[0].gainM).toBeGreaterThan(550);
+		expect(climbs[0].gainM).toBeLessThan(650);
+		expect(climbs[0].avgGrade).toBeGreaterThan(4.5);
+		expect(climbs[0].avgGrade).toBeLessThan(5.5);
+	});
+
+	it('keeps climbs separated by a long net-flat section apart', () => {
+		// 5 km of flat between two 3 km climbs dwarfs the gap budget —
+		// these are two separate climbs, not one with parts.
 		const route = legsRoute([
 			{ lenM: 3000, grade: 7 },
-			{ lenM: 150, grade: -1 },
+			{ lenM: 5000, grade: 0 },
+			{ lenM: 3000, grade: 7 }
+		]);
+		const climbs = detectClimbs(route);
+		expect(climbs).toHaveLength(2);
+		expect(climbs[0].parts).toBeUndefined();
+		expect(climbs[1].parts).toBeUndefined();
+	});
+
+	it('drops an unjoinable runt instead of attaching it as a part', () => {
+		// The 400 m tail after a real dip fails the floors (balanced: 500 m /
+		// 40 m gain), so only the first climb survives — partless.
+		const route = legsRoute([
+			{ lenM: 3000, grade: 7 },
+			{ lenM: 800, grade: -5 },
 			{ lenM: 400, grade: 7 }
 		]);
 		const climbs = detectClimbs(route);
 		expect(climbs).toHaveLength(1);
 		expect(climbs[0].parts).toBeUndefined();
+		expect(climbs[0].lengthM).toBeLessThan(3400);
 	});
 
 	it('keeps unbridged climbs part-free', () => {
@@ -123,10 +164,11 @@ describe('detectClimbs', () => {
 		expect(climbs[0].parts).toBeUndefined();
 	});
 
-	it('splits climbs separated by a long descent', () => {
+	it('splits climbs separated by a descent that exceeds the gap budget', () => {
+		// 4 km of descent blows past maxJoinGapM (2.5 km on balanced).
 		const route = legsRoute([
 			{ lenM: 3000, grade: 7 },
-			{ lenM: 2000, grade: -5 },
+			{ lenM: 4000, grade: -5 },
 			{ lenM: 3000, grade: 7 }
 		]);
 		const climbs = detectClimbs(route);
@@ -137,15 +179,17 @@ describe('detectClimbs', () => {
 		expect(climbs[1].category).toBe('3');
 	});
 
-	it('does not bridge a gap that loses too much elevation', () => {
-		// 24 m lost in 300 m exceeds balanced's 15 m gap-loss budget.
+	it('does not join across a descent that loses too much relative to the climbs', () => {
+		// ~84 m lost between two 80 m climbs exceeds joinLossFrac (0.35 of
+		// the combined ~160 m gain), even though the gap is short enough.
 		const route = legsRoute([
 			{ lenM: 1000, grade: 8 },
-			{ lenM: 300, grade: -8 },
+			{ lenM: 700, grade: -12 },
 			{ lenM: 1000, grade: 8 }
 		]);
 		const climbs = detectClimbs(route);
 		expect(climbs).toHaveLength(2);
+		expect(climbs[0].parts).toBeUndefined();
 	});
 
 	it('sensitive preset finds small climbs that balanced ignores', () => {

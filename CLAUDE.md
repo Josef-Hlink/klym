@@ -106,21 +106,31 @@ session, segments per route); conflicts return 409 inline.
 ### Climb autodetection (`src/lib/climbs.ts`)
 
 Pure module, vitest-covered. Pipeline: resample at 25m → moving-average
-smooth → collect runs of steps whose grade clears `climbGrade` → bridge
-short flats/dips (`maxGapM`/`maxGapLossM`, only when the merged stretch
-still averages `minAvgGrade`) → drop candidates under the length / gain
-/ grade / score floors. When bridging merged ≥ 2 runs that each clear
-the floors on their own, they're kept as `climb.parts` (leaves only,
-one level) so the UI can offer A, B, *and* A+B; rows with parts get a
-"N parts" expander and part saves are suffixed ("Climb 5a"). Three
-presets (`DETECTION_PRESETS`):
-strict / balanced / sensitive — strict bridges *bigger* gaps (long
-alpine climbs survive their false flats in one piece), sensitive uses
-small gaps so neighboring kickers stay separate. Scoring is
+smooth → collect runs of steps whose grade clears `climbGrade` →
+**tier-1 bridge** short, near-lossless breathers (`maxGapM`/
+`maxGapLossM`, merged stretch must still average `minAvgGrade`) —
+seamless, never yields parts → drop candidates under the length / gain
+/ grade / score floors → **tier-2 join** adjacent *qualified* climbs
+across a real interruption (flat shelf or descent): gap ≤
+`joinGapFrac` × combined children length, capped at `maxJoinGapM`, loss
+≤ `joinLossFrac` × combined gain, and the merged span must itself clear
+the floors. Joined parents keep the children as `climb.parts` (leaves
+only, one level; parts tile the parent) so the UI offers A, B, *and*
+A+B; rows with parts get a "N parts" expander and part saves are
+suffixed ("Climb 5a"). The two tiers carve gaps into three regimes:
+breather → one seamless climb; real interruption → one climb with
+parts; bigger → separate climbs. Gap budgets are relative on purpose —
+a flat 15 m loss cap can never join two real climbs over a real
+descent, and per-gap absolute budgets let chains of tiny runs bridge
+unlimited mush while one honest shelf splits (the pre-redesign bugs).
+Three presets (`DETECTION_PRESETS`):
+strict / balanced / sensitive — strict tier-1-bridges *bigger* gaps
+(long alpine climbs survive their false flats in one piece), sensitive
+uses small gaps so neighboring kickers stay separate. Scoring is
 Strava-style (`lengthM × avgGrade%`, cat 4 at 8 000 up to HC at 80 000,
 categories require ≥ 3% avg) plus a FIETS index; sanity-checked against
 the old `data/` GPX files (Alpe d'Huez comes out 13.9 km @ 8.0%, HC,
-FIETS 9.7).
+FIETS 9.7, one piece, no parts).
 
 In the route viewer, detection runs client-side in a `$derived`. The
 "Detected climbs" panel reuses the segment-row hover-preview plumbing

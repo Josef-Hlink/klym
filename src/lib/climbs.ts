@@ -6,10 +6,21 @@ import type { RoutePoint } from './types.js';
 //   2. smooth elevation with a moving average (raw GPS elevation is noisy)
 //   3. mark every step whose smoothed grade clears `climbGrade` and collect
 //      maximal runs of climbing steps
-//   4. bridge short flats/dips between runs (`maxGapM` / `maxGapLossM`),
-//      but only when the merged stretch still averages `minAvgGrade` —
-//      a bad bridge would otherwise dilute two good climbs into one reject
+//   4. tier-1 bridge: merge breathers (`maxGapM` / `maxGapLossM`) — short,
+//      near-lossless false flats where the climb never really stops. The
+//      merge is seamless: it never produces `parts`. Only allowed while the
+//      merged stretch still averages `minAvgGrade`.
 //   5. drop candidates that miss the length / gain / grade / score floors
+//   6. tier-2 join: compose *adjacent qualified climbs* across a real
+//      interruption (flat shelf or descent) when the gap is small relative
+//      to the climbing it connects (`joinGapFrac` capped by `maxJoinGapM`,
+//      loss within `joinLossFrac` of the combined gain, merged average
+//      still ≥ `minAvgGrade`). The joined parent keeps the children as
+//      `parts`, so the UI can offer A, B, and A+B.
+//
+// The two tiers carve the gap spectrum into three regimes: tiny breather →
+// one seamless climb; real interruption → one climb with parts; anything
+// bigger → separate climbs.
 //
 // Everything is computed on the smoothed profile, so reported gains run a
 // touch under what computeCropStats' 50m-window ascent shows for the same
@@ -33,10 +44,11 @@ export type DetectedClimb = {
 	fiets: number;
 	category: ClimbCategory | null;
 	/**
-	 * When gap-bridging merged ≥ 2 runs that each clear the filters on their
-	 * own, they're kept here (leaves only, one level deep) so the UI can offer
-	 * A, B, and A+B. Absent on unbridged climbs and when fewer than two
-	 * constituents qualify.
+	 * When tier-2 joining composed ≥ 2 qualified climbs across a real
+	 * interruption, the children are kept here (leaves only, one level deep)
+	 * so the UI can offer A, B, and A+B. Parts tile the parent: each is a
+	 * full qualified climb in its own right. Absent on seamless climbs —
+	 * tier-1 false-flat bridging never produces parts.
 	 */
 	parts?: DetectedClimb[];
 };
@@ -46,10 +58,17 @@ export type ClimbDetectionParams = {
 	smoothWindowM: number;
 	/** A step counts as climbing when its smoothed grade is at least this, %. */
 	climbGrade: number;
-	/** Bridge flats/descents up to this long… */
+	/** Tier 1: seamlessly merge breathers up to this long… */
 	maxGapM: number;
 	/** …as long as they lose no more than this much elevation. */
 	maxGapLossM: number;
+	/** Tier 2: join neighboring qualified climbs across a gap up to this
+	 * fraction of their combined length… */
+	joinGapFrac: number;
+	/** …capped at this absolute gap length… */
+	maxJoinGapM: number;
+	/** …losing at most this fraction of their combined gain. */
+	joinLossFrac: number;
 	minLengthM: number;
 	minGainM: number;
 	minAvgGrade: number;
@@ -58,7 +77,7 @@ export type ClimbDetectionParams = {
 
 export type SensitivityPreset = 'strict' | 'balanced' | 'sensitive';
 
-// strict = only serious, categorized-grade climbs, with aggressive gap
+// strict = only serious, categorized-grade climbs, with aggressive tier-1
 // bridging so a long alpine climb survives its false flats in one piece.
 // sensitive = every little kicker, with small gaps so neighboring bumps
 // stay separate instead of merging into one mushy candidate.
@@ -69,6 +88,9 @@ export const DETECTION_PRESETS: Record<SensitivityPreset, ClimbDetectionParams> 
 		climbGrade: 2.5,
 		maxGapM: 800,
 		maxGapLossM: 25,
+		joinGapFrac: 0.35,
+		maxJoinGapM: 3000,
+		joinLossFrac: 0.3,
 		minLengthM: 1000,
 		minGainM: 80,
 		minAvgGrade: 3.5,
@@ -80,6 +102,9 @@ export const DETECTION_PRESETS: Record<SensitivityPreset, ClimbDetectionParams> 
 		climbGrade: 2,
 		maxGapM: 400,
 		maxGapLossM: 15,
+		joinGapFrac: 0.4,
+		maxJoinGapM: 2500,
+		joinLossFrac: 0.35,
 		minLengthM: 500,
 		minGainM: 40,
 		minAvgGrade: 3,
@@ -91,6 +116,9 @@ export const DETECTION_PRESETS: Record<SensitivityPreset, ClimbDetectionParams> 
 		climbGrade: 1.5,
 		maxGapM: 300,
 		maxGapLossM: 20,
+		joinGapFrac: 0.4,
+		maxJoinGapM: 1500,
+		joinLossFrac: 0.35,
 		minLengthM: 300,
 		minGainM: 20,
 		minAvgGrade: 2,
@@ -194,8 +222,9 @@ export function detectClimbs(
 	}
 	if (cur) runs.push(cur);
 
-	// 4. Bridge gaps, remembering which runs each merged climb swallowed.
-	const groups: { i0: number; i1: number; runs: Run[] }[] = [];
+	// 4. Tier 1 — continuity bridging: a breather short and lossless enough
+	// that the climb never really stops. Seamless; never yields parts.
+	const groups: Run[] = [];
 	for (const run of runs) {
 		const prev = groups[groups.length - 1];
 		if (prev) {
@@ -206,11 +235,10 @@ export function detectClimbs(
 			const avg = len > 0 ? (gain / len) * 100 : 0;
 			if (gapLen <= p.maxGapM && gapLoss <= p.maxGapLossM && avg >= p.minAvgGrade) {
 				prev.i1 = run.i1;
-				prev.runs.push({ ...run });
 				continue;
 			}
 		}
-		groups.push({ i0: run.i0, i1: run.i1, runs: [{ ...run }] });
+		groups.push({ ...run });
 	}
 
 	// Stats + the length/gain/grade/score floors for one run; null = rejected.
@@ -260,18 +288,61 @@ export function detectClimbs(
 		};
 	};
 
-	// 5. Groups are disjoint and ordered, so the output is too.
-	const out: DetectedClimb[] = [];
+	// 5. Floors. Keep each survivor's index range for the join pass.
+	const qualified: { run: Run; climb: DetectedClimb }[] = [];
 	for (const g of groups) {
 		const climb = buildClimb(g);
-		if (!climb) continue;
-		if (g.runs.length >= 2) {
-			const parts = g.runs
-				.map(buildClimb)
-				.filter((c): c is DetectedClimb => c != null);
-			if (parts.length >= 2) climb.parts = parts;
-		}
-		out.push(climb);
+		if (climb) qualified.push({ run: g, climb });
 	}
+
+	// 6. Tier 2 — composition: join adjacent qualified climbs across a real
+	// interruption (flat shelf or descent) when the gap is small relative to
+	// the climbing it connects. Gap budgets scale with the *children* (the
+	// actual climbing), while the merged-average guard runs over the full
+	// span including the gap, so a descent can't dilute the parent into a
+	// non-climb. Qualified climbs are disjoint and ordered, so so is the
+	// output.
+	const out: DetectedClimb[] = [];
+	let cluster: { run: Run; climb: DetectedClimb }[] = [];
+	const flush = () => {
+		if (cluster.length === 1) {
+			out.push(cluster[0].climb);
+		} else if (cluster.length >= 2) {
+			const parent = buildClimb({
+				i0: cluster[0].run.i0,
+				i1: cluster[cluster.length - 1].run.i1
+			});
+			// The join guard re-checks the floors at every extension, so the
+			// parent always builds; the fallback is just type-level safety.
+			if (parent) {
+				parent.parts = cluster.map((c) => c.climb);
+				out.push(parent);
+			} else {
+				out.push(...cluster.map((c) => c.climb));
+			}
+		}
+		cluster = [];
+	};
+	for (const q of qualified) {
+		const last = cluster[cluster.length - 1];
+		if (last) {
+			const gapLen = dist[q.run.i0] - dist[last.run.i1 + 1];
+			const gapLoss = Math.max(0, ele[last.run.i1 + 1] - ele[q.run.i0]);
+			const childLen = cluster.reduce((s, c) => s + c.climb.lengthM, q.climb.lengthM);
+			const childGain = cluster.reduce((s, c) => s + c.climb.gainM, q.climb.gainM);
+			const merged = buildClimb({ i0: cluster[0].run.i0, i1: q.run.i1 });
+			if (
+				gapLen <= Math.min(p.maxJoinGapM, p.joinGapFrac * childLen) &&
+				gapLoss <= p.joinLossFrac * childGain &&
+				merged != null
+			) {
+				cluster.push(q);
+				continue;
+			}
+		}
+		flush();
+		cluster = [q];
+	}
+	flush();
 	return out;
 }
