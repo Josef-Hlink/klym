@@ -32,6 +32,13 @@ export type DetectedClimb = {
 	score: number;
 	fiets: number;
 	category: ClimbCategory | null;
+	/**
+	 * When gap-bridging merged ≥ 2 runs that each clear the filters on their
+	 * own, they're kept here (leaves only, one level deep) so the UI can offer
+	 * A, B, and A+B. Absent on unbridged climbs and when fewer than two
+	 * constituents qualify.
+	 */
+	parts?: DetectedClimb[];
 };
 
 export type ClimbDetectionParams = {
@@ -187,10 +194,10 @@ export function detectClimbs(
 	}
 	if (cur) runs.push(cur);
 
-	// 4. Bridge gaps.
-	const merged: Run[] = [];
+	// 4. Bridge gaps, remembering which runs each merged climb swallowed.
+	const groups: { i0: number; i1: number; runs: Run[] }[] = [];
 	for (const run of runs) {
-		const prev = merged[merged.length - 1];
+		const prev = groups[groups.length - 1];
 		if (prev) {
 			const gapLen = dist[run.i0] - dist[prev.i1 + 1];
 			const gapLoss = Math.max(0, ele[prev.i1 + 1] - ele[run.i0]);
@@ -199,15 +206,15 @@ export function detectClimbs(
 			const avg = len > 0 ? (gain / len) * 100 : 0;
 			if (gapLen <= p.maxGapM && gapLoss <= p.maxGapLossM && avg >= p.minAvgGrade) {
 				prev.i1 = run.i1;
+				prev.runs.push({ ...run });
 				continue;
 			}
 		}
-		merged.push({ ...run });
+		groups.push({ i0: run.i0, i1: run.i1, runs: [{ ...run }] });
 	}
 
-	// 5. Stats + filters. Runs are disjoint and ordered, so the output is too.
-	const out: DetectedClimb[] = [];
-	for (const r of merged) {
+	// Stats + the length/gain/grade/score floors for one run; null = rejected.
+	const buildClimb = (r: Run): DetectedClimb | null => {
 		const startM = dist[r.i0];
 		const endM = dist[r.i1 + 1];
 		const lengthM = endM - startM;
@@ -221,7 +228,7 @@ export function detectClimbs(
 			avgGrade < p.minAvgGrade ||
 			score < p.minScore
 		) {
-			continue;
+			return null;
 		}
 
 		let topEleM = startEleM;
@@ -238,7 +245,7 @@ export function detectClimbs(
 			}
 		}
 
-		out.push({
+		return {
 			startM,
 			endM,
 			lengthM,
@@ -250,7 +257,21 @@ export function detectClimbs(
 			score,
 			fiets: fietsIndex(topEleM - startEleM, lengthM, topEleM),
 			category: climbCategory(score, avgGrade)
-		});
+		};
+	};
+
+	// 5. Groups are disjoint and ordered, so the output is too.
+	const out: DetectedClimb[] = [];
+	for (const g of groups) {
+		const climb = buildClimb(g);
+		if (!climb) continue;
+		if (g.runs.length >= 2) {
+			const parts = g.runs
+				.map(buildClimb)
+				.filter((c): c is DetectedClimb => c != null);
+			if (parts.length >= 2) climb.parts = parts;
+		}
+		out.push(climb);
 	}
 	return out;
 }

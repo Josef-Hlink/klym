@@ -77,6 +77,52 @@ describe('detectClimbs', () => {
 		expect(climbs[0].lengthM).toBeGreaterThan(5900);
 	});
 
+	it('exposes both halves of a bridged climb as parts', () => {
+		const route = legsRoute([
+			{ lenM: 3000, grade: 7 },
+			{ lenM: 200, grade: -1 },
+			{ lenM: 3000, grade: 7 }
+		]);
+		const [climb] = detectClimbs(route);
+		expect(climb.parts).toHaveLength(2);
+		const [a, b] = climb.parts!;
+		// Parts nest inside the parent, stay ordered, and skip the dip.
+		expect(a.startM).toBeGreaterThanOrEqual(climb.startM);
+		expect(b.endM).toBeLessThanOrEqual(climb.endM);
+		expect(a.endM).toBeLessThanOrEqual(b.startM);
+		for (const part of [a, b]) {
+			expect(part.lengthM).toBeGreaterThan(2500);
+			expect(part.lengthM).toBeLessThan(3300);
+			expect(part.avgGrade).toBeGreaterThan(6.4);
+			expect(part.avgGrade).toBeLessThan(7.5);
+			expect(part.parts).toBeUndefined();
+		}
+	});
+
+	it('omits parts when only one constituent clears the filters', () => {
+		// The 400 m tail after the dip is too short/small to stand alone
+		// (balanced floors: 500 m / 40 m gain), so no parts are attached.
+		const route = legsRoute([
+			{ lenM: 3000, grade: 7 },
+			{ lenM: 150, grade: -1 },
+			{ lenM: 400, grade: 7 }
+		]);
+		const climbs = detectClimbs(route);
+		expect(climbs).toHaveLength(1);
+		expect(climbs[0].parts).toBeUndefined();
+	});
+
+	it('keeps unbridged climbs part-free', () => {
+		const route = legsRoute([
+			{ lenM: 2000, grade: 0 },
+			{ lenM: 5000, grade: 8 },
+			{ lenM: 2000, grade: 0 }
+		]);
+		const climbs = detectClimbs(route);
+		expect(climbs).toHaveLength(1);
+		expect(climbs[0].parts).toBeUndefined();
+	});
+
 	it('splits climbs separated by a long descent', () => {
 		const route = legsRoute([
 			{ lenM: 3000, grade: 7 },

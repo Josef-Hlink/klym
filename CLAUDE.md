@@ -109,7 +109,11 @@ Pure module, vitest-covered. Pipeline: resample at 25m → moving-average
 smooth → collect runs of steps whose grade clears `climbGrade` → bridge
 short flats/dips (`maxGapM`/`maxGapLossM`, only when the merged stretch
 still averages `minAvgGrade`) → drop candidates under the length / gain
-/ grade / score floors. Three presets (`DETECTION_PRESETS`):
+/ grade / score floors. When bridging merged ≥ 2 runs that each clear
+the floors on their own, they're kept as `climb.parts` (leaves only,
+one level) so the UI can offer A, B, *and* A+B; rows with parts get a
+"N parts" expander and part saves are suffixed ("Climb 5a"). Three
+presets (`DETECTION_PRESETS`):
 strict / balanced / sensitive — strict bridges *bigger* gaps (long
 alpine climbs survive their false flats in one piece), sensitive uses
 small gaps so neighboring kickers stay separate. Scoring is
