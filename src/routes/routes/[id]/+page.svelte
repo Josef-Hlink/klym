@@ -150,12 +150,21 @@
 		body.set('startDistM', String(c.startM));
 		body.set('endDistM', String(c.endM));
 		body.set('binSizeM', '500');
-		const res = await fetch('?/saveSegment', {
-			method: 'POST',
-			headers: { 'x-sveltekit-action': 'true' },
-			body
-		});
-		const result: ActionResult = deserialize(await res.text());
+		let result: ActionResult;
+		try {
+			const res = await fetch('?/saveSegment', {
+				method: 'POST',
+				headers: { 'x-sveltekit-action': 'true' },
+				body
+			});
+			result = deserialize(await res.text());
+		} catch {
+			// Network drop or a non-action error body (e.g. a 500 HTML page that
+			// deserialize can't parse). Surface it instead of leaving the row
+			// stuck in its saving state with no feedback.
+			climbError = 'Save failed';
+			return false;
+		}
 		if (result.type === 'success') return true;
 		climbError =
 			result.type === 'failure' && typeof result.data?.error === 'string'
