@@ -277,11 +277,14 @@ tiles, geometry, viewport) + vitest suite covering elevation/geo/slug
 helpers and all four topo modules (~120 tests) · M10 self-host:
 adapter-node, anonymous per-visitor sessions (`hooks.server.ts`),
 in-memory owner-scoped storage, Nix flake + NixOS module + hosting guide
-(`HOSTING.md`); deployed live behind a Cloudflare Tunnel.
+(`HOSTING.md`); deployed live behind a Cloudflare Tunnel · M11 climb
+autodetection in the route viewer (`src/lib/climbs.ts`): two-tier gap
+bridging, expandable parts, hover preview + quick-save, three sensitivity
+presets (see the autodetection note above).
 
 ## Next milestone (planned)
 
-M11 Strava sign-in + route/activity import (OAuth2). Routes via
+M12 Strava sign-in + route/activity import (OAuth2). Routes via
 `/routes/{id}/export_gpx` reuse `parseGpx` as-is; activities via
 `/activities/{id}/streams` map to `RoutePoint[]` and carry HR/power/
 cadence natively. The HTTPS callback URL it needs is already live:
