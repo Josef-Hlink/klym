@@ -1,9 +1,17 @@
 <script lang="ts">
-	import { enhance } from '$app/forms';
+	import { deserialize, enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
+	import type { ActionResult } from '@sveltejs/kit';
 	import RouteMap from '$lib/components/RouteMap.svelte';
 	import ElevationChart from '$lib/components/ElevationChart.svelte';
 	import ActivityBadge from '$lib/components/ActivityBadge.svelte';
+	import {
+		DETECTION_PRESETS,
+		categoryColor,
+		detectClimbs,
+		type DetectedClimb,
+		type SensitivityPreset
+	} from '$lib/climbs.js';
 	import { computeCropStats, gradeColor } from '$lib/elevation.js';
 	import { fmtKm, fmtM } from '$lib/format.js';
 	import type { PageProps } from './$types.js';
@@ -33,18 +41,161 @@
 	} | null>(null);
 	let segError = $state<string | null>(null);
 
-	// While a segment row is hovered, preview its A/B on the map + chart.
-	// Interactions (click/drag) are disabled during preview so the user
-	// doesn't accidentally edit their own markers. Suppressed while
+	// Climb autodetection. Pure function of the points, recomputed only when
+	// the sensitivity preset changes; results are suggestions the user can
+	// preview (hover), load into the markers (Select) or save directly.
+	const SENSITIVITIES: SensitivityPreset[] = ['strict', 'balanced', 'sensitive'];
+	let sensitivity = $state<SensitivityPreset>('balanced');
+	let climbsPanelOpen = $state(true);
+	let showClimbBands = $state(true);
+	// Climb rows are addressed by key: "3" = detectedClimbs[3], "3:1" = its
+	// second part (bridged climbs expose their halves via climb.parts).
+	let hoveredClimbKey = $state<string | null>(null);
+	let savingClimbKey = $state<string | null>(null);
+	let expandedClimbs = $state<number[]>([]);
+	let savingAllClimbs = $state(false);
+	let climbError = $state<string | null>(null);
+
+	const detectedClimbs = $derived(detectClimbs(route.points, DETECTION_PRESETS[sensitivity]));
+
+	function climbByKey(key: string | null): DetectedClimb | null {
+		if (key == null) return null;
+		const [ti, pi] = key.split(':');
+		const top = detectedClimbs[Number(ti)];
+		if (!top) return null;
+		if (pi === undefined) return top;
+		return top.parts?.[Number(pi)] ?? null;
+	}
+
+	// While a segment or detected-climb row is hovered, preview its A/B on the
+	// map + chart. Interactions (click/drag) are disabled during preview so the
+	// user doesn't accidentally edit their own markers. Suppressed while
 	// adjusting since the markers are already loaded from the segment.
 	const hoveredSegment = $derived.by(() =>
 		hoveredSegmentId && !adjusting
 			? (segments.find((s) => s.id === hoveredSegmentId) ?? null)
 			: null
 	);
-	const displayMarkerA = $derived(hoveredSegment ? hoveredSegment.startDistM : markerA);
-	const displayMarkerB = $derived(hoveredSegment ? hoveredSegment.endDistM : markerB);
-	const previewing = $derived(hoveredSegment != null);
+	const hoveredClimb = $derived.by(() => (adjusting ? null : climbByKey(hoveredClimbKey)));
+	const hoveredTopIdx = $derived(
+		hoveredClimbKey == null ? null : Number(hoveredClimbKey.split(':')[0])
+	);
+	const previewRange = $derived.by(() => {
+		if (hoveredSegment) return { a: hoveredSegment.startDistM, b: hoveredSegment.endDistM };
+		if (hoveredClimb) return { a: hoveredClimb.startM, b: hoveredClimb.endM };
+		return null;
+	});
+	const displayMarkerA = $derived(previewRange ? previewRange.a : markerA);
+	const displayMarkerB = $derived(previewRange ? previewRange.b : markerB);
+	const previewing = $derived(previewRange != null);
+
+	function tint(hex: string, alpha: number): string {
+		const r = parseInt(hex.slice(1, 3), 16);
+		const g = parseInt(hex.slice(3, 5), 16);
+		const b = parseInt(hex.slice(5, 7), 16);
+		return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+	}
+
+	const chartRegions = $derived(
+		showClimbBands
+			? detectedClimbs.map((c, i) => ({
+					startM: c.startM,
+					endM: c.endM,
+					color: tint(categoryColor(c.category), i === hoveredTopIdx ? 0.35 : 0.12)
+				}))
+			: []
+	);
+
+	// A detected climb counts as saved when an existing segment matches its
+	// bounds to within a meter (Select + manual save, or the quick-save below).
+	function savedSegmentFor(c: DetectedClimb) {
+		return segments.find(
+			(s) => Math.abs(s.startDistM - c.startM) < 1 && Math.abs(s.endDistM - c.endM) < 1
+		);
+	}
+	const unsavedClimbCount = $derived(detectedClimbs.filter((c) => !savedSegmentFor(c)).length);
+
+	// Parts get a letter suffix: "Climb 5a (km 12.3)".
+	function climbName(c: DetectedClimb, idx: number, partIdx?: number): string {
+		const letter = partIdx == null ? '' : String.fromCharCode(97 + partIdx);
+		return `Climb ${idx + 1}${letter} (km ${(c.startM / 1000).toFixed(1)})`;
+	}
+
+	function selectClimb(c: DetectedClimb) {
+		markerA = c.startM;
+		markerB = c.endM;
+	}
+
+	function setSensitivity(preset: SensitivityPreset) {
+		sensitivity = preset;
+		hoveredClimbKey = null;
+		expandedClimbs = [];
+		climbError = null;
+	}
+
+	function toggleClimbsPanel() {
+		climbsPanelOpen = !climbsPanelOpen;
+		hoveredClimbKey = null;
+	}
+
+	function toggleParts(idx: number) {
+		expandedClimbs = expandedClimbs.includes(idx)
+			? expandedClimbs.filter((i) => i !== idx)
+			: [...expandedClimbs, idx];
+	}
+
+	async function postSaveClimb(c: DetectedClimb, name: string): Promise<boolean> {
+		const body = new FormData();
+		body.set('name', name);
+		body.set('startDistM', String(c.startM));
+		body.set('endDistM', String(c.endM));
+		body.set('binSizeM', '500');
+		let result: ActionResult;
+		try {
+			const res = await fetch('?/saveSegment', {
+				method: 'POST',
+				headers: { 'x-sveltekit-action': 'true' },
+				body
+			});
+			result = deserialize(await res.text());
+		} catch {
+			// Network drop or a non-action error body (e.g. a 500 HTML page that
+			// deserialize can't parse). Surface it instead of leaving the row
+			// stuck in its saving state with no feedback.
+			climbError = 'Save failed';
+			return false;
+		}
+		if (result.type === 'success') return true;
+		climbError =
+			result.type === 'failure' && typeof result.data?.error === 'string'
+				? result.data.error
+				: 'Save failed';
+		return false;
+	}
+
+	async function saveClimb(c: DetectedClimb, key: string, name: string) {
+		savingClimbKey = key;
+		climbError = null;
+		if (await postSaveClimb(c, name)) await invalidateAll();
+		savingClimbKey = null;
+	}
+
+	// Keeps going past individual failures (e.g. a name conflict with an
+	// earlier save) so one dupe doesn't strand the rest; first error wins.
+	// Top-level climbs only — parts are saved one at a time, deliberately.
+	async function saveAllClimbs() {
+		savingAllClimbs = true;
+		climbError = null;
+		let firstError: string | null = null;
+		for (let i = 0; i < detectedClimbs.length; i++) {
+			const c = detectedClimbs[i];
+			if (savedSegmentFor(c)) continue;
+			if (!(await postSaveClimb(c, climbName(c, i)))) firstError ??= climbError;
+		}
+		climbError = firstError;
+		await invalidateAll();
+		savingAllClimbs = false;
+	}
 
 	const crop = $derived.by(() => {
 		if (markerA == null || markerB == null) return null;
@@ -241,6 +392,7 @@
 				onPlaceMarker={previewing ? undefined : placeMarker}
 				onRemoveMarker={previewing ? undefined : removeMarker}
 				onMoveMarker={previewing ? undefined : moveMarker}
+				regions={chartRegions}
 			/>
 		</div>
 
@@ -444,6 +596,165 @@
 		{/if}
 
 		<div class="rounded-lg border border-neutral-200 bg-white">
+			<div class="flex flex-wrap items-center justify-between gap-2 px-4 pt-4 {climbsPanelOpen ? 'pb-2' : 'pb-4'}">
+				<h3 class="text-sm font-medium uppercase tracking-wide">
+					<button
+						type="button"
+						aria-expanded={climbsPanelOpen}
+						onclick={toggleClimbsPanel}
+						class="flex items-center gap-1.5 text-neutral-500 hover:text-neutral-900"
+					>
+						{@render iconChevron(climbsPanelOpen)}
+						{@render iconMountain()}
+						Detected climbs ({detectedClimbs.length})
+					</button>
+				</h3>
+				{#if climbsPanelOpen}
+				<div class="flex items-center gap-2">
+					<div class="flex overflow-hidden rounded-md border border-neutral-300">
+						{#each SENSITIVITIES as preset (preset)}
+							<button
+								type="button"
+								onclick={() => setSensitivity(preset)}
+								class="px-2 py-1 text-[11px] font-medium capitalize {sensitivity === preset
+									? 'bg-neutral-900 text-white'
+									: 'text-neutral-600 hover:bg-neutral-100'}"
+							>
+								{preset}
+							</button>
+						{/each}
+					</div>
+					<button
+						type="button"
+						aria-pressed={showClimbBands}
+						title={showClimbBands
+							? 'Hide climb bands on the elevation chart'
+							: 'Shade climb bands on the elevation chart'}
+						onclick={() => (showClimbBands = !showClimbBands)}
+						class="flex h-[26px] w-7 items-center justify-center rounded-md border {showClimbBands
+							? 'border-neutral-900 bg-neutral-900 text-white'
+							: 'border-neutral-300 text-neutral-500 hover:bg-neutral-100'}"
+					>
+						{@render iconEye()}
+					</button>
+					{#if unsavedClimbCount > 0}
+						<button
+							type="button"
+							disabled={savingAllClimbs || savingClimbKey != null}
+							onclick={saveAllClimbs}
+							class="rounded-md bg-neutral-900 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-neutral-700 disabled:opacity-50"
+						>
+							{savingAllClimbs ? 'Saving…' : `Save all (${unsavedClimbCount})`}
+						</button>
+					{/if}
+				</div>
+				{/if}
+			</div>
+			{#if climbsPanelOpen}
+			{#if climbError}
+				<p class="mx-4 mb-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700">{climbError}</p>
+			{/if}
+			{#if detectedClimbs.length === 0}
+				<p class="px-4 pb-4 text-sm text-neutral-500">
+					No climbs detected at “{sensitivity}” sensitivity{sensitivity !== 'sensitive'
+						? ' — try a more sensitive preset'
+						: ''}.
+				</p>
+			{:else}
+				<ul class="divide-y divide-neutral-200">
+					{#each detectedClimbs as climb, i (climb.startM)}
+						<li
+							class="flex items-center gap-3 px-4 py-3 transition-colors {hoveredClimbKey === `${i}`
+								? 'bg-neutral-50'
+								: ''}"
+							onpointerenter={(e) => {
+								if (e.pointerType === 'mouse' && !adjusting) hoveredClimbKey = `${i}`;
+							}}
+							onpointerleave={() => {
+								if (hoveredClimbKey === `${i}`) hoveredClimbKey = null;
+							}}
+						>
+							<span
+								class="flex h-8 w-9 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white"
+								style:background-color={categoryColor(climb.category)}
+								title={climb.category
+									? climb.category === 'HC'
+										? 'Hors catégorie'
+										: `Category ${climb.category}`
+									: 'Uncategorized'}
+							>
+								{climb.category ?? '·'}
+							</span>
+							<div class="flex-1">
+								<div class="flex items-center gap-2 text-sm font-medium">
+									Climb {i + 1}
+									{#if climb.parts}
+										<button
+											type="button"
+											aria-expanded={expandedClimbs.includes(i)}
+											title="This climb was bridged across a dip — show its parts"
+											onclick={() => toggleParts(i)}
+											class="flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900"
+										>
+											{@render iconChevron(expandedClimbs.includes(i))}
+											{climb.parts.length} parts
+										</button>
+									{/if}
+								</div>
+								<div class="text-xs text-neutral-500">
+									{fmtKm(climb.startM)} → {fmtKm(climb.endM)} · top {fmtM(climb.topEleM)} · FIETS
+									{climb.fiets.toFixed(1)}
+								</div>
+							</div>
+							{@render climbStats(climb)}
+							{@render climbActions(climb, `${i}`, climbName(climb, i))}
+						</li>
+						{#if climb.parts && expandedClimbs.includes(i)}
+							{#each climb.parts as part, j (part.startM)}
+								{@const key = `${i}:${j}`}
+								<li
+									class="flex items-center gap-3 py-2.5 pr-4 pl-12 transition-colors {hoveredClimbKey ===
+									key
+										? 'bg-neutral-50'
+										: 'bg-neutral-50/40'}"
+									onpointerenter={(e) => {
+										if (e.pointerType === 'mouse' && !adjusting) hoveredClimbKey = key;
+									}}
+									onpointerleave={() => {
+										if (hoveredClimbKey === key) hoveredClimbKey = null;
+									}}
+								>
+									<span
+										class="flex h-6 w-7 shrink-0 items-center justify-center rounded text-[10px] font-bold text-white"
+										style:background-color={categoryColor(part.category)}
+										title={part.category
+											? part.category === 'HC'
+												? 'Hors catégorie'
+												: `Category ${part.category}`
+											: 'Uncategorized'}
+									>
+										{part.category ?? '·'}
+									</span>
+									<div class="flex-1">
+										<div class="text-sm font-medium">
+											Climb {i + 1}{String.fromCharCode(97 + j)}
+										</div>
+										<div class="text-xs text-neutral-500">
+											{fmtKm(part.startM)} → {fmtKm(part.endM)} · FIETS {part.fiets.toFixed(1)}
+										</div>
+									</div>
+									{@render climbStats(part)}
+									{@render climbActions(part, key, climbName(part, i, j))}
+								</li>
+							{/each}
+						{/if}
+					{/each}
+				</ul>
+			{/if}
+			{/if}
+		</div>
+
+		<div class="rounded-lg border border-neutral-200 bg-white">
 			<h3 class="px-4 pt-4 pb-2 text-sm font-medium uppercase tracking-wide text-neutral-500">
 				Segments ({segments.length})
 			</h3>
@@ -462,10 +773,10 @@
 							seg.id
 								? 'bg-neutral-50'
 								: ''} {adjusting?.segId === seg.id ? 'bg-amber-50' : ''}"
-							onmouseenter={() => {
-								if (!adjusting) hoveredSegmentId = seg.id;
+							onpointerenter={(e) => {
+								if (e.pointerType === 'mouse' && !adjusting) hoveredSegmentId = seg.id;
 							}}
-							onmouseleave={() => {
+							onpointerleave={() => {
 								if (hoveredSegmentId === seg.id) hoveredSegmentId = null;
 							}}
 						>
@@ -682,6 +993,89 @@
 	<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 		<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
 		<path d="M3 3v5h5" />
+	</svg>
+{/snippet}
+
+{#snippet climbStats(c: DetectedClimb)}
+	<div class="flex items-center gap-5 text-sm tabular-nums">
+		<div class="text-right">
+			<div class="text-[10px] uppercase tracking-wide text-neutral-500">Length</div>
+			<div class="font-medium">{fmtKm(c.lengthM)}</div>
+		</div>
+		<div class="text-right">
+			<div class="text-[10px] uppercase tracking-wide text-neutral-500">Gain</div>
+			<div class="font-medium">+{fmtM(c.gainM)}</div>
+		</div>
+		<div class="text-right">
+			<div class="text-[10px] uppercase tracking-wide text-neutral-500">Avg</div>
+			<div class="flex items-center justify-end gap-1.5 font-medium">
+				<span
+					class="inline-block h-2.5 w-2.5 rounded"
+					style:background-color={gradeColor(c.avgGrade)}
+				></span>
+				{c.avgGrade.toFixed(1)}%
+			</div>
+		</div>
+		<div class="text-right">
+			<div class="text-[10px] uppercase tracking-wide text-neutral-500">Max</div>
+			<div class="flex items-center justify-end gap-1.5 font-medium">
+				<span
+					class="inline-block h-2.5 w-2.5 rounded"
+					style:background-color={gradeColor(c.maxGrade)}
+				></span>
+				{c.maxGrade.toFixed(1)}%
+			</div>
+		</div>
+	</div>
+{/snippet}
+
+{#snippet climbActions(c: DetectedClimb, key: string, name: string)}
+	{@const saved = savedSegmentFor(c)}
+	<div class="flex items-center gap-1">
+		<button
+			type="button"
+			title="Load this climb into the A/B markers"
+			onclick={() => selectClimb(c)}
+			class="rounded-md px-2.5 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-200"
+		>
+			Select
+		</button>
+		{#if saved}
+			<a
+				href="/routes/{route.id}/segments/{saved.id}"
+				class="rounded-md px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50"
+			>
+				✓ Saved
+			</a>
+		{:else}
+			<button
+				type="button"
+				disabled={savingClimbKey != null || savingAllClimbs}
+				onclick={() => saveClimb(c, key, name)}
+				class="rounded-md bg-neutral-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-50"
+			>
+				{savingClimbKey === key ? 'Saving…' : 'Save'}
+			</button>
+		{/if}
+	</div>
+{/snippet}
+
+{#snippet iconChevron(open: boolean)}
+	<svg class="h-3.5 w-3.5 shrink-0 transition-transform {open ? 'rotate-90' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<polyline points="9 6 15 12 9 18" />
+	</svg>
+{/snippet}
+
+{#snippet iconMountain()}
+	<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<path d="m8 3 4 8 5-5 5 15H2L8 3z" />
+	</svg>
+{/snippet}
+
+{#snippet iconEye()}
+	<svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+		<circle cx="12" cy="12" r="3" />
 	</svg>
 {/snippet}
 
