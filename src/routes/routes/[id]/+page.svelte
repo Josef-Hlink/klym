@@ -375,7 +375,7 @@
 			onRemoveMarker={previewing ? undefined : removeMarker}
 		/>
 
-		<div class="rounded-lg border border-neutral-200 bg-white p-3 pt-2">
+		<div class="sticky top-0 z-20 rounded-lg border border-neutral-200 bg-white p-3 pt-2">
 			<div class="mb-1 flex items-center justify-between px-1 text-xs">
 				<span class="font-medium uppercase tracking-wide text-neutral-500">
 					Elevation
