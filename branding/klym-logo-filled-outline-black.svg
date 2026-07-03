@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Full-colour mark with the black outline on top (sticker style, for light backgrounds). -->
+  <polygon points="4,58 4,52 15,44 15,58" fill="#eab308"/>
+  <polygon points="15,58 15,44 26,34 26,58" fill="#f59e0b"/>
+  <polygon points="26,58 26,34 37,20 37,58" fill="#f97316"/>
+  <polygon points="37,58 37,20 48,4 48,58" fill="#dc2626"/>
+  <polygon points="48,58 48,4 59,58" fill="#7f1d1d"/>
+  <path d="M4 58 V52 L15 44 L26 34 L37 20 L48 4 L59 58 Z" stroke="#000000" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M15 58 V44 M26 58 V34 M37 58 V20 M48 58 V4" stroke="#000000" stroke-width="3" stroke-linecap="round"/>
+</svg>
