@@ -7,8 +7,9 @@ Context for future Claude sessions working on klym.
 A local-only, single-user web app that turns GPX files into
 climbfinder.com-style colored-bar climb profile images. Users select
 climbs with two markers on a synced map + elevation chart; an
-autodetector (`src/lib/climbs.ts`) suggests candidate climbs which the
-user can preview, load into the markers, or save.
+autodetector (`src/lib/climbs.ts`) suggests candidate climbs and
+descents which the user can preview on hover, open directly (ephemeral
+explore view — no saving), or load into the markers to adjust.
 
 Remote: `Josef-Hlink/klym` (private, MIT).
 
@@ -44,6 +45,11 @@ Package manager is **pnpm**. Use `pnpm <script>`, not `pnpm exec <tool>`.
   list (SSR **off** — MapLibre and uPlot both need the DOM)
 - `/routes/[id]/segments/[segId]` — segment profile + export (SSR **off**
   for the same reason; rasterization also needs the DOM)
+- `/routes/[id]/explore?from=&to=&name=` — the same profile view fed by
+  query-param bounds instead of a saved segment (SSR off). Detected
+  climbs/descents open here on click. Both pages are thin wrappers
+  around `SegmentView.svelte`, which owns stats, section controls, the
+  CF chart, the 3D topo map and the export menu.
 
 Server loads (`+page.server.ts`) still run server-side even with
 `ssr = false`; only HTML rendering is skipped.
@@ -76,9 +82,12 @@ session, segments per route); conflicts return 409 inline.
 ## Key design decisions
 
 - **Manual crop first; autodetect assists.** The two-marker UX stays
-  primary. `src/lib/climbs.ts` detects candidate climbs and the route
-  viewer lists them with hover preview / Select / Save actions — it
-  never places markers or saves segments on its own.
+  primary. `src/lib/climbs.ts` detects candidate climbs and descents;
+  the route viewer lists them with hover preview, whole-card click to
+  the explore view, and a pencil "Adjust" that loads the bounds into
+  the markers — it never places markers or saves segments on its own.
+  Detections are never saved: exploring is ephemeral by design
+  (sessions are short-lived anyway); only manual crops become segments.
 - **In-memory, per-session, ephemeral storage.** Keep it that way unless
   the user asks for persistence. Hosted multi-user without login: each
   visitor gets an isolated sandbox via the `klym_sid` cookie and loses it
@@ -132,14 +141,23 @@ categories require ≥ 3% avg) plus a FIETS index; sanity-checked against
 the old `data/` GPX files (Alpe d'Huez comes out 13.9 km @ 8.0%, HC,
 FIETS 9.7, one piece, no parts).
 
-In the route viewer, detection runs client-side in a `$derived`. The
-"Detected climbs" panel reuses the segment-row hover-preview plumbing
-(both feed one `previewRange`), shades climb bands on the elevation
-chart via the chart's `regions` prop (toggleable, category-tinted),
-and quick-saves through programmatic `fetch('?/saveSegment')` +
-`deserialize` so it shares the server action with the manual flow. A
-climb counts as "saved" when an existing segment matches its bounds
-within 1 m.
+Descents: `detectDescents` mirrors the elevation (negate), runs the
+same pipeline, and flips the stats back — `gainM`/`avgGrade`/`maxGrade`
+come out negative (gainM is the net drop), `startEleM` is the high
+start and `topEleM` lands on the *bottom* of the descent. Category
+still grades severity on the same score scale but descent badges and
+bands render uniformly gray in the UI for now.
+
+In the route viewer, detection runs client-side in `$derived`s. The
+"Detected climbs" panel and the collapsed-by-default "Detected
+descents" panel share the segment-row hover-preview plumbing (all feed
+one `previewRange`) and one row snippet (`detectionRow`); row keys are
+namespaced (`c3`, `c3:1`, `d0`). Both shade bands on the elevation
+chart via the chart's `regions` prop, with separate eye toggles
+(climb bands default on and category-tinted, descent bands default
+off and gray). The whole row is a stretched link (absolute-inset span
+inside the anchor; buttons float above with `relative z-10`) to the
+explore view — detections are never saved.
 
 ### uPlot cursor/value offsets
 
@@ -159,6 +177,19 @@ uPlot absorbs `click` on `.u-over` in some circumstances. The route-
 viewer chart uses `onpointerdown` on the wrapper instead, which fires
 reliably. Chip drag uses `setPointerCapture` so drags stay smooth even
 when the cursor leaves the chip's bounding box.
+
+### Map ↔ chart hover and map pin drops
+
+`hoverDistM` is one shared two-way binding: `ElevationChart` writes it
+from uPlot's cursor, `RouteMap` writes it from a plain map `mousemove`.
+The map side snaps: nearest track point by cos(lat)-scaled degree
+distance, accepted only if it projects within `SNAP_PX` (30) screen
+pixels of the pointer — deliberately not a track-layer event, so users
+don't have to hit the 7px line pixel-perfectly. Map clicks place
+markers through the same `snapToTrack`. On the chart side, when
+`hoverDistM` is set but uPlot's cursor is idle (`cursorLeft == null`,
+i.e. the hover came from the map), the chart draws its own indicator
+line and reuses the regular tooltip at `valToPos` of that distance.
 
 ### Marker chips (A/B)
 

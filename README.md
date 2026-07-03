@@ -15,11 +15,13 @@
 ## What it does
 
 1. **Upload a GPX.** Name it; klym slugifies that into a route id.
-2. **Browse it** on a map + elevation chart with a synced crosshair.
-3. **Let klym find the climbs.** It autodetects candidates and lists them with
-   length, gain, grade, category and FIETS index — hover to preview, _Select_
-   to load one into the markers, or _Save_ it straight away. A climb split by a
-   real descent shows up as one climb with expandable parts (A, B, A+B); short
+2. **Browse it** on a map + elevation chart with a two-way synced crosshair —
+   hovering either one shows your position on the other.
+3. **Let klym find the climbs (and descents).** It autodetects candidates and
+   lists them with length, gain, grade, category and FIETS index — hover to
+   preview, click to open the full profile (nothing to save first), or hit
+   _Adjust_ to load one into the markers and trim it. A climb split by a real
+   descent shows up as one climb with expandable parts (A, B, A+B); short
    false flats stay seamless.
 
    <details>
@@ -29,13 +31,14 @@
 
    </details>
 
-4. **Or crop by hand.** Place two markers (A, B) — click to set, drag to
-   fine-tune. Placement is directional (clicks left of A set A, right of B set
-   B) and A can't cross past B.
-5. **Render the profile.** Save a crop to get the CF-style image: 500m-bucket
-   bars colored by gradient, elevation line on top, labeled endpoints. Tune the
-   bin size live, toggle grade labels, then export as PNG, copy to clipboard, or
-   download the raw SVG.
+4. **Or crop by hand.** Place two markers (A, B) — click the chart or drop a
+   pin on the map (it snaps to the route), drag to fine-tune. Placement is
+   directional (clicks left of A set A, right of B set B) and A can't cross
+   past B.
+5. **Render the profile.** Open a detected climb or save a manual crop to get
+   the CF-style image: 500m-bucket bars colored by gradient, elevation line on
+   top, labeled endpoints. Tune the bin size live, toggle grade labels, then
+   export as PNG, copy to clipboard, or download the raw SVG.
 
    <details>
    <summary>Screenshot — climb profile</summary>
