@@ -81,6 +81,13 @@
 
 	const markerAPx = $derived(visiblePx(markerA));
 	const markerBPx = $derived(visiblePx(markerB));
+
+	// hoverDistM is two-way: uPlot's cursor writes it (cursorLeft set), but the
+	// map writes it too when the user hovers the track. In that external case
+	// uPlot draws no cursor, so we place our own indicator line and reuse the
+	// same tooltip at the equivalent x position.
+	const externalHoverPx = $derived(cursorLeft == null ? visiblePx(hoverDistM) : null);
+	const tooltipLeft = $derived(cursorLeft ?? externalHoverPx);
 	const cropRange = $derived.by(() => {
 		if (markerA == null || markerB == null || !plotBounds) return null;
 		const aRaw = distToPx(markerA);
@@ -474,10 +481,19 @@
 		</button>
 	{/if}
 
-	{#if hover && cursorLeft != null && cursorLeft > 0}
+	{#if externalHoverPx != null}
+		<div
+			class="pointer-events-none absolute w-px bg-neutral-400"
+			style:left="{externalHoverPx}px"
+			style:top="0"
+			style:height="{CHART_H}px"
+		></div>
+	{/if}
+
+	{#if hover && tooltipLeft != null && tooltipLeft > 0}
 		<div
 			class="pointer-events-none absolute top-1 z-10 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs shadow-sm"
-			style:left="{cursorLeft}px"
+			style:left="{tooltipLeft}px"
 		>
 			<span
 				class="inline-block rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-white"

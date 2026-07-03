@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import maplibregl, { type Map as MLMap, type Marker } from 'maplibre-gl';
+	import maplibregl, { type Map as MLMap, type MapMouseEvent, type Marker } from 'maplibre-gl';
 	import 'maplibre-gl/dist/maplibre-gl.css';
 	import { findPointAtDistance } from '$lib/elevation.js';
 	import type { RouteBounds, RoutePoint } from '$lib/types.js';
@@ -44,12 +44,15 @@
 		layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
 	};
 
+	// Longitude deltas are scaled by cos(lat) so "nearest" matches what the
+	// eye sees on the (north-up) mercator map, not nearest in raw degrees.
 	function nearestPointDist(lng: number, lat: number): number {
+		const cosLat = Math.cos((lat * Math.PI) / 180);
 		let bestIdx = 0;
 		let bestD = Infinity;
 		for (let i = 0; i < points.length; i++) {
 			const dLat = lat - points[i].lat;
-			const dLng = lng - points[i].lon;
+			const dLng = (lng - points[i].lon) * cosLat;
 			const d = dLat * dLat + dLng * dLng;
 			if (d < bestD) {
 				bestD = d;
@@ -57,6 +60,22 @@
 			}
 		}
 		return points[bestIdx].cumDistM;
+	}
+
+	// Hovers and pin-drop clicks anywhere on the map snap to the track as long
+	// as the nearest track point is within this many screen pixels.
+	const SNAP_PX = 30;
+
+	// Nearest track point to a mouse event, or null when it's further than
+	// SNAP_PX on screen. Shared by the hover and click handlers.
+	function snapToTrack(e: MapMouseEvent): number | null {
+		if (!map) return null;
+		const distM = nearestPointDist(e.lngLat.lng, e.lngLat.lat);
+		const p = findPointAtDistance(points, distM);
+		const proj = map.project([p.lon, p.lat]);
+		const dx = proj.x - e.point.x;
+		const dy = proj.y - e.point.y;
+		return dx * dx + dy * dy <= SNAP_PX * SNAP_PX ? distM : null;
 	}
 
 	function cropCoords(startM: number, endM: number): [number, number][] {
@@ -151,16 +170,24 @@
 				.setLngLat([end.lon, end.lat])
 				.addTo(map);
 
-			map.on('mouseenter', 'track-casing', () => {
-				if (map) map.getCanvas().style.cursor = 'crosshair';
+			// Hovering near the track mirrors the position onto the elevation
+			// chart (the same two-way hoverDistM binding the chart feeds us).
+			// Deliberately not a track-layer event: snapping within SNAP_PX
+			// beats having to hit the 7px line pixel-perfectly.
+			map.on('mousemove', (e) => {
+				const distM = snapToTrack(e);
+				hoverDistM = distM;
+				if (map) map.getCanvas().style.cursor = distM != null ? 'crosshair' : '';
 			});
-			map.on('mouseleave', 'track-casing', () => {
-				if (map) map.getCanvas().style.cursor = '';
+			map.on('mouseout', () => {
+				hoverDistM = null;
 			});
-			map.on('click', 'track-casing', (e) => {
+			// Drop a pin anywhere near the route: the marker snaps to the
+			// nearest track point when the click lands within SNAP_PX of it.
+			map.on('click', (e) => {
 				if (!onPlaceMarker) return;
-				const distM = nearestPointDist(e.lngLat.lng, e.lngLat.lat);
-				onPlaceMarker(distM);
+				const distM = snapToTrack(e);
+				if (distM != null) onPlaceMarker(distM);
 			});
 
 			ready = true;
