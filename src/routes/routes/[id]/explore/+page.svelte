@@ -1,5 +1,6 @@
 <script lang="ts">
 	import SegmentView from '$lib/components/SegmentView.svelte';
+	import { slugify } from '$lib/slug.js';
 	import type { PageProps } from './$types.js';
 
 	let { data }: PageProps = $props();
@@ -7,10 +8,8 @@
 
 <SegmentView
 	route={data.route}
-	name={data.segment.name}
-	idCode={data.segment.id}
-	startDistM={data.segment.startDistM}
-	endDistM={data.segment.endDistM}
-	initialBinSizeM={data.segment.binSizeM}
-	exportBase="{data.route.id}-{data.segment.id}"
+	name={data.name}
+	startDistM={data.startM}
+	endDistM={data.endM}
+	exportBase="{data.route.id}-{slugify(data.name) || 'exploration'}"
 />
