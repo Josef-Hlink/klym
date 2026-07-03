@@ -224,12 +224,28 @@ background, then `canvas.toBlob`. Copy-to-clipboard uses the same blob
 via `navigator.clipboard.write([new ClipboardItem(...)])`. SVG download
 is just `Blob([xml])` with `image/svg+xml`.
 
-The chart's logo is **inlined as polygons** in `SegmentProfile.svelte`
-(scaled-down copy of `static/logo.svg`) so it survives serialization
+The chart's branding block is **inlined as polygons/paths** in
+`SegmentProfile.svelte` (the mark from `static/logo.svg`, the wordmark
+glyphs via `KlymWordmarkGlyphs.svelte`) so it survives serialization
 without a separate `<image href>` round-trip. CSS classes are not
 preserved when an SVG is rendered from a data URL — only inline
 attributes and direct presentation styles. Anything you want to be
 visible in the export must be encoded that way.
+
+### Branding
+
+Brand assets live in `branding/` (mark variants + the "klym." wordmark,
+one Archivo-Black glyph per logo colour; gradient wordmark kept as an
+alternate). `/branding` is a throwaway unlinked gallery page. In-app:
+`KlymWordmark.svelte` (homepage header), `KlymBrand.svelte` (mark +
+"klym" link, top-right of route/segment pages), and
+`KlymWordmarkGlyphs.svelte` (bare `<path>`s, `namespace="svg"`, shared
+by the wordmark component and the profile export; optional `fill` prop
+renders all glyphs monochrome). The profile's branding block keeps the
+mark as the only coloured element: mark above black wordmark at equal
+width, big black section name beside the mark (matching its height),
+small gray route name beside the wordmark (`routeName`/`sectionName`
+props).
 
 ### SegmentMap (3D segment view)
 

@@ -4,6 +4,7 @@
 	import RouteMap from '$lib/components/RouteMap.svelte';
 	import ElevationChart from '$lib/components/ElevationChart.svelte';
 	import ActivityBadge from '$lib/components/ActivityBadge.svelte';
+	import KlymBrand from '$lib/components/KlymBrand.svelte';
 	import {
 		DETECTION_PRESETS,
 		categoryColor,
@@ -325,7 +326,10 @@
 </svelte:head>
 
 <main class="mx-auto max-w-5xl px-6 py-10">
-	<a href="/" class="text-sm text-neutral-500 hover:text-neutral-900">← All routes</a>
+	<div class="flex items-center justify-between">
+		<a href="/" class="text-sm text-neutral-500 hover:text-neutral-900">← All routes</a>
+		<KlymBrand />
+	</div>
 	<header class="mt-4 mb-6 flex items-end justify-between gap-4">
 		<div>
 			<div class="flex items-center gap-2">

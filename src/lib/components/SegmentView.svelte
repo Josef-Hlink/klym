@@ -5,6 +5,7 @@
 	} from '$lib/components/SegmentProfile.svelte';
 	import SegmentMap from '$lib/components/SegmentMap.svelte';
 	import ActivityBadge from '$lib/components/ActivityBadge.svelte';
+	import KlymBrand from '$lib/components/KlymBrand.svelte';
 	import KlymLogo from '$lib/components/KlymLogo.svelte';
 	import TourLogo from '$lib/components/TourLogo.svelte';
 	import GiroLogo from '$lib/components/GiroLogo.svelte';
@@ -211,9 +212,12 @@
 </svelte:head>
 
 <main class="mx-auto max-w-5xl px-6 py-10">
-	<a href="/routes/{route.id}" class="text-sm text-neutral-500 hover:text-neutral-900"
-		>← {route.name}</a
-	>
+	<div class="flex items-center justify-between">
+		<a href="/routes/{route.id}" class="text-sm text-neutral-500 hover:text-neutral-900"
+			>← {route.name}</a
+		>
+		<KlymBrand />
+	</div>
 	<header class="mt-4 mb-6 flex items-end justify-between gap-4">
 		<div>
 			<div class="flex items-center gap-2">
@@ -462,8 +466,8 @@
 			{profileMode}
 			{theme}
 			externalHoverDistM={mapHoverDistM}
-			title="klym"
-			subtitle="{name} — {route.name}"
+			routeName={route.name}
+			sectionName={name}
 		/>
 	</div>
 

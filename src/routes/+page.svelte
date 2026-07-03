@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import KlymWordmark from '$lib/components/KlymWordmark.svelte';
 	import { fmtKm, fmtM } from '$lib/format.js';
 	import type { PageProps } from './$types.js';
 
@@ -118,9 +119,8 @@
 
 <main class="mx-auto max-w-3xl px-6 py-12">
 	<header class="mb-10">
-		<img src="/logo.svg" alt="" class="mb-3 h-14 w-14" />
-		<h1 class="text-3xl font-semibold tracking-tight">klym</h1>
-		<p class="mt-1 text-sm text-neutral-600">
+		<h1><KlymWordmark class="h-14 w-auto" /></h1>
+		<p class="mt-3 text-sm text-neutral-600">
 			Upload a GPX, pick two points, get a climbfinder-style profile image.
 		</p>
 	</header>

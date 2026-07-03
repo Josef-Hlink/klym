@@ -6,6 +6,7 @@
 		type ColorTheme,
 		type GradeBin
 	} from '$lib/elevation.js';
+	import KlymWordmarkGlyphs from './KlymWordmarkGlyphs.svelte';
 	import { fmtDist } from '$lib/format.js';
 	import type { RoutePoint } from '$lib/types.js';
 
@@ -18,8 +19,8 @@
 		endDistM: number;
 		binSizeM?: number;
 		bins?: GradeBin[];
-		title?: string;
-		subtitle?: string;
+		routeName?: string;
+		sectionName?: string;
 		labelMode?: GradeLabelMode;
 		/**
 		 * Section rendering: 'raw' follows the GPS trace, 'straight' snaps each
@@ -38,8 +39,8 @@
 		endDistM,
 		binSizeM = 500,
 		bins: binsProp,
-		title = 'klym',
-		subtitle = '',
+		routeName = '',
+		sectionName = '',
 		labelMode = 'percent',
 		profileMode = 'raw',
 		theme = 'klym',
@@ -55,10 +56,23 @@
 
 	const W = 1600;
 	const H = 800;
-	const M = { top: 144, right: 90, bottom: 70, left: 60 };
+	const M = { top: 142, right: 90, bottom: 70, left: 60 };
 	const plotW = W - M.left - M.right;
 	const plotH = H - M.top - M.bottom;
 	const yBot = M.top + plotH;
+
+	// Branding block: the mark with the coloured wordmark under it, sharing one
+	// left edge and width; route/section names sit to their right on a common
+	// left edge. The mark's content spans x 4→59, y 4→58 in its 64-unit viewBox;
+	// the wordmark glyphs span x 3.84→185.66 with the baseline at y=0 and a
+	// 46.47-unit ascender (see KlymWordmarkGlyphs.svelte).
+	const BRAND_W = 60;
+	const markScale = BRAND_W / 55;
+	const markTop = 34;
+	const markBottom = markTop + 54 * markScale;
+	const wordScale = BRAND_W / 181.83;
+	const wordBaseline = markBottom + 6 + 46.47 * wordScale;
+	const labelX = M.left + BRAND_W + 14;
 
 	const slicedPoints = $derived.by(() => {
 		if (points.length === 0) return [];
@@ -373,18 +387,28 @@
 >
 	<rect width={W} height={H} fill="#f4f4f5" />
 
-	<!-- Logo: scaled-down inline copy of static/logo.svg, baseline aligned
-	     with the title text. -->
-	<g transform="translate({M.left}, 53) scale(0.5)">
+	<!-- Branding block: inline copy of static/logo.svg (CSS classes don't
+	     survive SVG export serialization, so everything is inline attributes)
+	     with the wordmark glyphs underneath at the same width. -->
+	<g transform="translate({M.left - 4 * markScale}, {markTop - 4 * markScale}) scale({markScale})">
 		<polygon points="4,58 4,52 15,44 15,58" fill="#eab308" />
 		<polygon points="15,58 15,44 26,34 26,58" fill="#f59e0b" />
 		<polygon points="26,58 26,34 37,20 37,58" fill="#f97316" />
 		<polygon points="37,58 37,20 48,4 48,58" fill="#dc2626" />
 		<polygon points="48,58 48,4 59,58" fill="#7f1d1d" />
 	</g>
-	<text x={M.left + 40} y="82" font-size="26" font-weight="800" fill="#111">{title}</text>
-	{#if subtitle}
-		<text x={M.left} y="112" font-size="22" font-weight="600" fill="#a1a1aa">{subtitle}</text>
+	<g transform="translate({M.left - 3.84 * wordScale}, {wordBaseline}) scale({wordScale})">
+		<KlymWordmarkGlyphs fill="#111" />
+	</g>
+	{#if sectionName}
+		<text x={labelX} y={markBottom - 2} font-size="36" font-weight="800" fill="#111"
+			>{sectionName}</text
+		>
+	{/if}
+	{#if routeName}
+		<text x={labelX} y={wordBaseline} font-size="18" font-weight="600" fill="#a1a1aa"
+			>{routeName}</text
+		>
 	{/if}
 
 	{#each yTicks as tick (tick)}
