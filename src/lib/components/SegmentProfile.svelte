@@ -14,6 +14,8 @@
 		title?: string;
 		subtitle?: string;
 		labelMode?: GradeLabelMode;
+		/** Straighten each section into a constant-grade ramp (the labelled grade). */
+		straightened?: boolean;
 		externalHoverDistM?: number | null;
 		hoverDistM?: number | null;
 		svgEl?: SVGSVGElement | null;
@@ -27,6 +29,7 @@
 		title = 'klym',
 		subtitle = '',
 		labelMode = 'percent',
+		straightened = false,
 		externalHoverDistM = null,
 		hoverDistM = $bindable(null),
 		svgEl = $bindable(null)
@@ -59,6 +62,30 @@
 	});
 
 	const bins = $derived(binsProp ?? computeBins(points, startDistM, endDistM, binSizeM));
+
+	// Straightened elevation: inside each bin the profile is a straight ramp from
+	// startEle to endEle, so a section labelled "3%" really rises at 3% the whole
+	// way. Adjacent bins share their boundary elevation, so the ramps join up
+	// continuously, and every vertex is a raw-curve sample — the straightened line
+	// never leaves the raw elevation range, so the y-axis needn't rescale.
+	function straightenedEleAt(distM: number): number {
+		if (bins.length === 0) return 0;
+		if (distM <= bins[0].startM) return bins[0].startEle;
+		const last = bins[bins.length - 1];
+		if (distM >= last.endM) return last.endEle;
+		for (const bin of bins) {
+			if (distM >= bin.startM && distM <= bin.endM) {
+				const run = bin.endM - bin.startM;
+				const t = run > 0 ? (distM - bin.startM) / run : 0;
+				return bin.startEle + (bin.endEle - bin.startEle) * t;
+			}
+		}
+		return last.endEle;
+	}
+
+	function eleAt(distM: number): number {
+		return straightened ? straightenedEleAt(distM) : findPointAtDistance(points, distM).ele;
+	}
 
 	// Per-bin averages of optional activity streams. Each bin only carries a
 	// metric if at least one point in its [startM, endM] range had it; we use
@@ -154,36 +181,42 @@
 			endM: number;
 		}[] = [];
 		for (const bin of bins) {
-			const binPoints: { dist: number; ele: number }[] = [];
-			const a = findPointAtDistance(points, bin.startM);
-			binPoints.push({ dist: a.cumDistM, ele: a.ele });
-			for (const p of points) {
-				if (p.cumDistM <= a.cumDistM) continue;
-				if (p.cumDistM >= bin.endM) break;
-				binPoints.push({ dist: p.cumDistM, ele: p.ele });
+			// The top edge follows the raw curve, or — when straightened — a single
+			// straight ramp from the bin's start elevation to its end elevation.
+			const topPoints: { dist: number; ele: number }[] = [];
+			if (straightened) {
+				topPoints.push({ dist: bin.startM, ele: bin.startEle });
+				topPoints.push({ dist: bin.endM, ele: bin.endEle });
+			} else {
+				const a = findPointAtDistance(points, bin.startM);
+				topPoints.push({ dist: a.cumDistM, ele: a.ele });
+				for (const p of points) {
+					if (p.cumDistM <= a.cumDistM) continue;
+					if (p.cumDistM >= bin.endM) break;
+					topPoints.push({ dist: p.cumDistM, ele: p.ele });
+				}
+				const b = findPointAtDistance(points, bin.endM);
+				topPoints.push({ dist: b.cumDistM, ele: b.ele });
 			}
-			const b = findPointAtDistance(points, bin.endM);
-			binPoints.push({ dist: b.cumDistM, ele: b.ele });
 
 			const xL = xScale(bin.startM);
 			const xR = xScale(bin.endM);
 			const parts: string[] = [`M${xL.toFixed(1)},${yBot.toFixed(1)}`];
 			let yPeak = Infinity; // smallest y == highest point in viewBox space
-			for (const p of binPoints) {
+			for (const p of topPoints) {
 				const x = xScale(p.dist);
 				const y = yScale(p.ele);
 				if (y < yPeak) yPeak = y;
 				parts.push(`L${x.toFixed(1)},${y.toFixed(1)}`);
 			}
 			parts.push(`L${xR.toFixed(1)},${yBot.toFixed(1)} Z`);
-			// Center reference: curve y at bin's midpoint distance, so labels
+			// Center reference: profile y at the bin's midpoint distance, so labels
 			// track the center of the fill rather than the peak corner.
 			const midDist = (bin.startM + bin.endM) / 2;
-			const midPt = findPointAtDistance(points, midDist);
 			areas.push({
 				path: parts.join(' '),
 				xCenter: (xL + xR) / 2,
-				yCenterCurve: yScale(midPt.ele),
+				yCenterCurve: yScale(eleAt(midDist)),
 				yPeak,
 				width: xR - xL,
 				grade: bin.grade,
@@ -195,6 +228,16 @@
 	});
 
 	const elevPath = $derived.by(() => {
+		if (straightened) {
+			if (bins.length === 0) return '';
+			const parts = [
+				`M${xScale(bins[0].startM).toFixed(1)},${yScale(bins[0].startEle).toFixed(1)}`
+			];
+			for (const bin of bins) {
+				parts.push(`L${xScale(bin.endM).toFixed(1)},${yScale(bin.endEle).toFixed(1)}`);
+			}
+			return parts.join(' ');
+		}
 		if (slicedPoints.length === 0) return '';
 		const parts: string[] = [];
 		for (let i = 0; i < slicedPoints.length; i++) {
@@ -398,10 +441,9 @@
 	{/if}
 
 	{#if externalHoverDistM != null && externalHoverDistM >= startDistM && externalHoverDistM <= endDistM}
-		{@const tp = findPointAtDistance(points, externalHoverDistM)}
 		<circle
 			cx={xScale(externalHoverDistM)}
-			cy={yScale(tp.ele)}
+			cy={yScale(eleAt(externalHoverDistM))}
 			r="8"
 			fill="#111"
 			stroke="#ffffff"

@@ -36,6 +36,8 @@
 	let mapHoverDistM = $state<number | null>(null);
 	let chartHoverDistM = $state<number | null>(null);
 
+	let straightened = $state(false);
+
 	let labelMode = $state<GradeLabelMode>('percent');
 	const labelModeOptions: { value: GradeLabelMode; label: string }[] = [
 		{ value: 'percent', label: 'n%' },
@@ -360,6 +362,29 @@
 			</div>
 		{/if}
 		<div class="flex items-center gap-2">
+			<span class="text-xs font-medium uppercase tracking-wide text-neutral-500">Profile</span>
+			<div class="inline-flex overflow-hidden rounded-md border border-neutral-300 text-xs">
+				<button
+					type="button"
+					onclick={() => (straightened = false)}
+					class="px-2.5 py-1 font-medium transition-colors {!straightened
+						? 'bg-neutral-900 text-white'
+						: 'bg-white text-neutral-600 hover:bg-neutral-100'}"
+				>
+					Raw
+				</button>
+				<button
+					type="button"
+					onclick={() => (straightened = true)}
+					class="border-l border-neutral-300 px-2.5 py-1 font-medium transition-colors {straightened
+						? 'bg-neutral-900 text-white'
+						: 'bg-white text-neutral-600 hover:bg-neutral-100'}"
+				>
+					Straight
+				</button>
+			</div>
+		</div>
+		<div class="flex items-center gap-2">
 			<span class="text-xs font-medium uppercase tracking-wide text-neutral-500">Labels</span>
 			<div class="inline-flex overflow-hidden rounded-md border border-neutral-300 text-xs">
 				{#each labelModeOptions as opt (opt.value)}
@@ -389,6 +414,7 @@
 			{binSizeM}
 			bins={activeBins}
 			{labelMode}
+			{straightened}
 			externalHoverDistM={mapHoverDistM}
 			title="klym"
 			subtitle="{name} — {route.name}"
