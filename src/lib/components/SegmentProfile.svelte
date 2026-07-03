@@ -1,5 +1,11 @@
 <script lang="ts">
-	import { computeBins, findPointAtDistance, gradeColor, type GradeBin } from '$lib/elevation.js';
+	import {
+		computeBins,
+		findPointAtDistance,
+		gradeColor,
+		type ColorTheme,
+		type GradeBin
+	} from '$lib/elevation.js';
 	import { fmtDist } from '$lib/format.js';
 	import type { RoutePoint } from '$lib/types.js';
 
@@ -16,6 +22,7 @@
 		labelMode?: GradeLabelMode;
 		/** Straighten each section into a constant-grade ramp (the labelled grade). */
 		straightened?: boolean;
+		theme?: ColorTheme;
 		externalHoverDistM?: number | null;
 		hoverDistM?: number | null;
 		svgEl?: SVGSVGElement | null;
@@ -30,6 +37,7 @@
 		subtitle = '',
 		labelMode = 'percent',
 		straightened = false,
+		theme = 'klym',
 		externalHoverDistM = null,
 		hoverDistM = $bindable(null),
 		svgEl = $bindable(null)
@@ -316,7 +324,7 @@
 	{/each}
 
 	{#each binAreas as area (area.startM)}
-		<path d={area.path} fill={gradeColor(area.grade)} />
+		<path d={area.path} fill={gradeColor(area.grade, theme)} />
 	{/each}
 
 	<!-- Start tick (0km boundary) -->
@@ -496,7 +504,7 @@
 		<div class="mt-0.5 flex items-center gap-1.5">
 			<span
 				class="inline-block h-2 w-2 rounded-full"
-				style:background-color={gradeColor(bin.grade)}
+				style:background-color={gradeColor(bin.grade, theme)}
 			></span>
 			<span class="tabular-nums">
 				{bin.grade.toFixed(1)}% <span class="text-neutral-400">({gainM >= 0 ? '+' : ''}{gainM} m)</span>
@@ -538,7 +546,7 @@
 		<div class="mt-0.5 flex items-center gap-1.5">
 			<span
 				class="inline-block h-2 w-2 rounded-full"
-				style:background-color={gradeColor(bin.grade)}
+				style:background-color={gradeColor(bin.grade, theme)}
 			></span>
 			<span class="tabular-nums">
 				{bin.grade.toFixed(1)}% <span class="text-neutral-400">({gainM >= 0 ? '+' : ''}{gainM} m)</span>

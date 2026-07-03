@@ -2,7 +2,17 @@
 	import SegmentProfile, { type GradeLabelMode } from '$lib/components/SegmentProfile.svelte';
 	import SegmentMap from '$lib/components/SegmentMap.svelte';
 	import ActivityBadge from '$lib/components/ActivityBadge.svelte';
-	import { computeAdaptiveBins, computeBins, computeCropStats, gradeColor } from '$lib/elevation.js';
+	import KlymLogo from '$lib/components/KlymLogo.svelte';
+	import TourLogo from '$lib/components/TourLogo.svelte';
+	import GiroLogo from '$lib/components/GiroLogo.svelte';
+	import {
+		COLOR_THEMES,
+		computeAdaptiveBins,
+		computeBins,
+		computeCropStats,
+		gradeColor,
+		type ColorTheme
+	} from '$lib/elevation.js';
 	import { fmtKm, fmtM } from '$lib/format.js';
 	import type { RouteData } from '$lib/types.js';
 
@@ -37,6 +47,7 @@
 	let chartHoverDistM = $state<number | null>(null);
 
 	let straightened = $state(false);
+	let theme = $state<ColorTheme>('klym');
 
 	let labelMode = $state<GradeLabelMode>('percent');
 	const labelModeOptions: { value: GradeLabelMode; label: string }[] = [
@@ -283,7 +294,7 @@
 				<dd class="mt-1 flex items-center gap-2 text-lg font-medium">
 					<span
 						class="inline-block h-3 w-3 rounded"
-						style:background-color={gradeColor(stats.avgGrade)}
+						style:background-color={gradeColor(stats.avgGrade, theme)}
 					></span>
 					{stats.avgGrade.toFixed(1)}%
 				</dd>
@@ -295,7 +306,7 @@
 				<dd class="mt-1 flex items-center gap-2 text-lg font-medium">
 					<span
 						class="inline-block h-3 w-3 rounded"
-						style:background-color={gradeColor(stats.maxGrade)}
+						style:background-color={gradeColor(stats.maxGrade, theme)}
 					></span>
 					{stats.maxGrade.toFixed(1)}%
 				</dd>
@@ -303,7 +314,8 @@
 		</dl>
 	</div>
 
-	<div class="mb-4 flex flex-wrap items-center gap-x-6 gap-y-3 rounded-lg border border-neutral-200 bg-white px-4 py-3">
+	<div class="mb-4 flex flex-col gap-3 rounded-lg border border-neutral-200 bg-white px-4 py-3">
+		<div class="flex flex-wrap items-center gap-x-6 gap-y-3">
 		<div class="flex items-center gap-2">
 			<span class="text-xs font-medium uppercase tracking-wide text-neutral-500">Sections</span>
 			<div class="inline-flex overflow-hidden rounded-md border border-neutral-300 text-xs">
@@ -361,6 +373,8 @@
 				<span class="min-w-32 whitespace-nowrap text-right text-sm tabular-nums">±{epsilonM} m · {activeBins.length} sections</span>
 			</div>
 		{/if}
+		</div>
+		<div class="flex flex-wrap items-center gap-x-6 gap-y-3">
 		<div class="flex items-center gap-2">
 			<span class="text-xs font-medium uppercase tracking-wide text-neutral-500">Profile</span>
 			<div class="inline-flex overflow-hidden rounded-md border border-neutral-300 text-xs">
@@ -385,6 +399,33 @@
 			</div>
 		</div>
 		<div class="flex items-center gap-2">
+			<span class="text-xs font-medium uppercase tracking-wide text-neutral-500">Colors</span>
+			<div class="inline-flex overflow-hidden rounded-md border border-neutral-300 text-xs">
+				{#each COLOR_THEMES as opt, i (opt.id)}
+					<button
+						type="button"
+						onclick={() => (theme = opt.id)}
+						aria-label={opt.label}
+						class="flex items-center gap-1.5 px-2.5 py-1 font-medium transition-colors {theme ===
+						opt.id
+							? 'bg-neutral-900 text-white'
+							: 'bg-white text-neutral-600 hover:bg-neutral-100'} {i > 0
+							? 'border-l border-neutral-300'
+							: ''}"
+					>
+						{#if opt.id === 'tdf'}
+							<TourLogo />
+						{:else if opt.id === 'giro'}
+							<GiroLogo />
+						{:else}
+							<KlymLogo />
+						{/if}
+						{opt.label}
+					</button>
+				{/each}
+			</div>
+		</div>
+		<div class="flex items-center gap-2">
 			<span class="text-xs font-medium uppercase tracking-wide text-neutral-500">Labels</span>
 			<div class="inline-flex overflow-hidden rounded-md border border-neutral-300 text-xs">
 				{#each labelModeOptions as opt (opt.value)}
@@ -402,6 +443,7 @@
 				{/each}
 			</div>
 		</div>
+		</div>
 	</div>
 
 	<div class="overflow-hidden rounded-lg border border-neutral-200 bg-white">
@@ -415,6 +457,7 @@
 			bins={activeBins}
 			{labelMode}
 			{straightened}
+			{theme}
 			externalHoverDistM={mapHoverDistM}
 			title="klym"
 			subtitle="{name} — {route.name}"
@@ -427,6 +470,7 @@
 			{startDistM}
 			{endDistM}
 			bins={activeBins}
+			{theme}
 			bind:hoverDistM={mapHoverDistM}
 			externalHoverDistM={chartHoverDistM}
 		/>

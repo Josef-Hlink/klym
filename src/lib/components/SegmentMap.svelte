@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { findPointAtDistance, gradeColor, type GradeBin } from '$lib/elevation.js';
+	import { findPointAtDistance, gradeColor, type ColorTheme, type GradeBin } from '$lib/elevation.js';
 	import { fmtKm, fmtM } from '$lib/format.js';
 	import {
 		buildAllDrapes,
@@ -48,6 +48,7 @@
 		startDistM: number;
 		endDistM: number;
 		bins: GradeBin[];
+		theme?: ColorTheme;
 		hoverDistM?: number | null;
 		externalHoverDistM?: number | null;
 	};
@@ -56,6 +57,7 @@
 		startDistM,
 		endDistM,
 		bins,
+		theme = 'klym',
 		hoverDistM = $bindable(null),
 		externalHoverDistM = null
 	}: Props = $props();
@@ -270,9 +272,9 @@
 	const anchorLines = $derived(
 		buildAnchorLines(points, startDistM, endDistM, refFrame, project)
 	);
-	const boundaryAnchors = $derived(buildBoundaryAnchors(points, bins, refFrame, project));
+	const boundaryAnchors = $derived(buildBoundaryAnchors(points, bins, refFrame, project, theme));
 	const polylines = $derived(
-		buildPolylineRuns(slicedPoints, projectedPoints, bins, refFrame)
+		buildPolylineRuns(slicedPoints, projectedPoints, bins, refFrame, theme)
 	);
 
 	const startEnd = $derived.by(() => {
@@ -281,10 +283,10 @@
 	});
 
 	const externalHoverHighlight = $derived(
-		buildHoverHighlight(externalHoverDistM, bins, points, slicedPoints, refFrame, project)
+		buildHoverHighlight(externalHoverDistM, bins, points, slicedPoints, refFrame, project, theme)
 	);
 	const allDrapes = $derived(
-		showAllDrapes ? buildAllDrapes(bins, points, slicedPoints, refFrame, project) : []
+		showAllDrapes ? buildAllDrapes(bins, points, slicedPoints, refFrame, project, theme) : []
 	);
 
 	// Viewport (visible window in viewBox space).
@@ -906,7 +908,7 @@
 				<span class="flex items-center gap-1">
 					<span
 						class="inline-block h-2 w-2 rounded-full"
-						style:background-color={gradeColor(bin.grade)}
+						style:background-color={gradeColor(bin.grade, theme)}
 					></span>
 					<span class="tabular-nums">{bin.grade.toFixed(1)}%</span>
 					{#if wRun > 0}

@@ -7,7 +7,7 @@
 // reactive Projector and re-runs these helpers whenever camera state
 // changes; nothing in here touches reactive state directly.
 
-import { findPointAtDistance, gradeColor, type GradeBin } from '../elevation.js';
+import { findPointAtDistance, gradeColor, type ColorTheme, type GradeBin } from '../elevation.js';
 import type { RoutePoint } from '../types.js';
 import type { Projected, Projector, RefFrame } from './projection.js';
 import type { TileImage } from './tiles.js';
@@ -138,7 +138,8 @@ export function buildBoundaryAnchors(
 	points: readonly RoutePoint[],
 	bins: readonly GradeBin[],
 	refFrame: RefFrame | null,
-	project: Projector
+	project: Projector,
+	theme: ColorTheme = 'klym'
 ): BoundaryAnchor[] {
 	const out: BoundaryAnchor[] = [];
 	if (!refFrame || bins.length === 0) return out;
@@ -146,7 +147,7 @@ export function buildBoundaryAnchors(
 		const ip = findPointAtDistance(points as RoutePoint[], bin.endM);
 		const [tx, ty] = project(ip.lat, ip.lon, ip.ele);
 		const [bx, by] = project(ip.lat, ip.lon, refFrame.minEle);
-		out.push({ x1: tx, y1: ty, x2: bx, y2: by, color: gradeColor(bin.grade) });
+		out.push({ x1: tx, y1: ty, x2: bx, y2: by, color: gradeColor(bin.grade, theme) });
 	}
 	return out;
 }
@@ -160,7 +161,8 @@ export function buildPolylineRuns(
 	slicedPoints: readonly RoutePoint[],
 	projectedPoints: readonly Projected[],
 	bins: readonly GradeBin[],
-	refFrame: RefFrame | null
+	refFrame: RefFrame | null,
+	theme: ColorTheme = 'klym'
 ): PolylineRun[] {
 	const out: PolylineRun[] = [];
 	if (slicedPoints.length < 2 || !refFrame) return out;
@@ -171,7 +173,7 @@ export function buildPolylineRuns(
 		const midDist = (slicedPoints[i].cumDistM + slicedPoints[i + 1].cumDistM) / 2;
 		while (binIdx < bins.length - 1 && bins[binIdx].endM < midDist) binIdx++;
 		const grade = bins[binIdx]?.grade ?? 0;
-		segColors[i] = gradeColor(grade);
+		segColors[i] = gradeColor(grade, theme);
 	}
 
 	let runStart = 0;
@@ -263,7 +265,8 @@ export function buildHoverHighlight(
 	points: readonly RoutePoint[],
 	slicedPoints: readonly RoutePoint[],
 	refFrame: RefFrame | null,
-	project: Projector
+	project: Projector,
+	theme: ColorTheme = 'klym'
 ): HoverHighlight {
 	const empty: HoverHighlight = { polyline: '', drape: '', color: '' };
 	if (externalHoverDistM == null || !refFrame) return empty;
@@ -276,7 +279,7 @@ export function buildHoverHighlight(
 	}
 	if (!bin) return empty;
 	const { polyline, drape } = buildDrape(bin, points, slicedPoints, refFrame, project);
-	return { polyline, drape, color: gradeColor(bin.grade) };
+	return { polyline, drape, color: gradeColor(bin.grade, theme) };
 }
 
 export type DrapeColored = { drape: string; color: string };
@@ -287,11 +290,12 @@ export function buildAllDrapes(
 	points: readonly RoutePoint[],
 	slicedPoints: readonly RoutePoint[],
 	refFrame: RefFrame | null,
-	project: Projector
+	project: Projector,
+	theme: ColorTheme = 'klym'
 ): DrapeColored[] {
 	if (!refFrame || bins.length === 0) return [];
 	return bins.map((bin) => ({
 		drape: buildDrape(bin, points, slicedPoints, refFrame, project).drape,
-		color: gradeColor(bin.grade)
+		color: gradeColor(bin.grade, theme)
 	}));
 }

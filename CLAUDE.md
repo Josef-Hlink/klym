@@ -97,10 +97,19 @@ session, segments per route); conflicts return 409 inline.
 - **50m elevation smoothing for cumulative ascent.** Raw GPS elevation
   summed naively over-reports by ~2×. We smooth, then sum positive
   deltas. Lives in `src/lib/elevation.ts::computeTotalAscent`.
-- **Gradient color scale** (`gradeColor` in `elevation.ts`): slate for
-  descent (< -1%), yellow → amber → orange → red → dark red for
-  ascending grades. Shared across the hover tooltip, stat pills, and
-  the CF image bars.
+- **Gradient color scale** (`gradeColor(grade, theme)` in `elevation.ts`):
+  any downhill (grade < 0%) is always slate gray; the climbing range is a
+  per-theme list of `{ below, color }` bands (first band whose `below`
+  exceeds the grade wins). `COLOR_THEMES` lists the presets: `klym` (seven
+  warm stops at half-integer cutoffs, yellow → dark red), `giro` (seven
+  maglia-rosa pinks on the same cutoffs), and `tdf` — the official ASO
+  Tour scheme, a coarse four-band road line **green < 3% ≤ blue < 6% ≤
+  red < 9% ≤ black** at integer cutoffs (the yellow in ASO profiles is
+  just the silhouette fill, not a band). Themes may differ in band count
+  and cutoffs. The theme is a `SegmentView`-level control (Colors),
+  threaded into `SegmentProfile`, `SegmentMap`, and the topo `geometry.ts`
+  builders; the route viewer and its chart stay on the `klym` default.
+  Shared across the hover tooltip, stat pills, and the CF image bars.
 
 ## Invariants
 

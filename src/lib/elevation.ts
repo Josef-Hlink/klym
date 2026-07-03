@@ -316,16 +316,67 @@ export function computeAdaptiveBins(
 	return bins;
 }
 
-// Cutoffs sit at half-integers so a grade that *rounds* to N falls in the same
-// bucket as the integer label "N%". Without this, e.g. -0.95 displays as "-1%"
-// but with `< -1` falls through to yellow, mismatching the slate-for-descent rule.
-export function gradeColor(grade: number): string {
-	if (grade < -0.5) return '#64748b';
-	if (grade < 0.5) return '#eab308';
-	if (grade < 2.5) return '#f59e0b';
-	if (grade < 4.5) return '#f97316';
-	if (grade < 6.5) return '#ea580c';
-	if (grade < 8.5) return '#dc2626';
-	if (grade < 11.5) return '#b91c1c';
-	return '#7f1d1d';
+// Any downhill (grade < 0) is always this slate gray, across every theme.
+const DESCENT_COLOR = '#64748b';
+
+export type ColorTheme = 'klym' | 'tdf' | 'giro';
+
+// A theme is an ascending list of bands; the first band whose `below` exceeds
+// the grade wins (last band is the open-ended top with `below: Infinity`).
+// Descent/flat (< -0.5%) is always gray, so bands only cover the climbing
+// range. Themes are free to differ in band count *and* cutoffs.
+type GradeBand = { below: number; color: string };
+
+const THEME_BANDS: Record<ColorTheme, GradeBand[]> = {
+	// House palette: seven warm stops at half-integer cutoffs (so a grade that
+	// rounds to N shares the bucket of the "N%" label).
+	klym: [
+		{ below: 0.5, color: '#eab308' },
+		{ below: 2.5, color: '#f59e0b' },
+		{ below: 4.5, color: '#f97316' },
+		{ below: 6.5, color: '#ea580c' },
+		{ below: 8.5, color: '#dc2626' },
+		{ below: 11.5, color: '#b91c1c' },
+		{ below: Infinity, color: '#7f1d1d' }
+	],
+	// Official ASO / Tour de France per-km scheme: the yellow is just the
+	// silhouette fill — the gradient lives in a four-band road line, coarser
+	// than ours. green < 3% ≤ blue < 6% ≤ red < 9% ≤ black. (Descent → gray.)
+	tdf: [
+		{ below: 3, color: '#6cb33f' },
+		{ below: 6, color: '#2f80c8' },
+		{ below: 9, color: '#e01f26' },
+		{ below: Infinity, color: '#131313' }
+	],
+	// Giro d'Italia: a light → dark ramp centred on the official maglia-rosa
+	// magenta #E50083 (three lighter tints, the base, three darker shades),
+	// on the house cutoffs.
+	giro: [
+		{ below: 0.5, color: '#f38cc7' },
+		{ below: 2.5, color: '#ef5eb1' },
+		{ below: 4.5, color: '#ea2e99' },
+		{ below: 6.5, color: '#e50083' },
+		{ below: 8.5, color: '#b30066' },
+		{ below: 11.5, color: '#85004c' },
+		{ below: Infinity, color: '#5c0034' }
+	]
+};
+
+export const COLOR_THEMES: { id: ColorTheme; label: string }[] = [
+	{ id: 'klym', label: 'klym' },
+	{ id: 'tdf', label: 'Tour' },
+	{ id: 'giro', label: 'Giro' }
+];
+
+// Any downhill (grade < 0) is gray; otherwise the first band whose `below`
+// exceeds the grade wins. klym/giro cutoffs sit at half-integers so a grade
+// rounding to N lands in the "N%" bucket; the Tour scheme uses ASO's integer
+// cutoffs. (A shallow -0.3% still reads gray but rounds to a "-0%" label.)
+export function gradeColor(grade: number, theme: ColorTheme = 'klym'): string {
+	if (grade < 0) return DESCENT_COLOR;
+	const bands = THEME_BANDS[theme];
+	for (const band of bands) {
+		if (grade < band.below) return band.color;
+	}
+	return bands[bands.length - 1].color;
 }

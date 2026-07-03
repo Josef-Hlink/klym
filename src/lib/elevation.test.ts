@@ -6,7 +6,8 @@ import {
 	computeCropStats,
 	findPointAtDistance,
 	gradeAtDistance,
-	gradeColor
+	gradeColor,
+	COLOR_THEMES
 } from './elevation.js';
 import type { RoutePoint } from './types.js';
 
@@ -248,13 +249,13 @@ describe('computeAdaptiveBins', () => {
 describe('gradeColor', () => {
 	// Cutoffs sit at half-integers so a grade rounding to N falls in the
 	// bucket whose label is N%. Test the boundaries directly.
-	it('descent (< -0.5) is slate', () => {
-		expect(gradeColor(-0.51)).toBe('#64748b');
+	it('any downhill (grade < 0) is slate', () => {
+		expect(gradeColor(-0.01)).toBe('#64748b');
+		expect(gradeColor(-0.3)).toBe('#64748b'); // shallow false downhill, still gray
 		expect(gradeColor(-100)).toBe('#64748b');
 	});
 
-	it('flat band [-0.5, 0.5) is yellow', () => {
-		expect(gradeColor(-0.5)).toBe('#eab308');
+	it('flat band [0, 0.5) is yellow', () => {
 		expect(gradeColor(0)).toBe('#eab308');
 		expect(gradeColor(0.49)).toBe('#eab308');
 	});
@@ -268,7 +269,46 @@ describe('gradeColor', () => {
 		expect(gradeColor(11.5)).toBe('#7f1d1d'); // 12%+
 	});
 
-	it('a grade rounding to -1% lands in slate (the regression the cutoff comment warns about)', () => {
+	it('a grade rounding to -1% lands in slate', () => {
 		expect(gradeColor(-0.95)).toBe('#64748b');
+	});
+
+	it('descent is always gray regardless of theme', () => {
+		expect(gradeColor(-3, 'tdf')).toBe('#64748b');
+		expect(gradeColor(-3, 'giro')).toBe('#64748b');
+	});
+
+	it('tdf follows the ASO green/blue/red/black bands at integer cutoffs', () => {
+		const green = '#6cb33f';
+		const blue = '#2f80c8';
+		const red = '#e01f26';
+		const black = '#131313';
+		// green < 3 ≤ blue < 6 ≤ red < 9 ≤ black
+		expect(gradeColor(2.5, 'tdf')).toBe(green);
+		expect(gradeColor(2.99, 'tdf')).toBe(green);
+		expect(gradeColor(3, 'tdf')).toBe(blue);
+		expect(gradeColor(4.5, 'tdf')).toBe(blue);
+		expect(gradeColor(5.99, 'tdf')).toBe(blue);
+		expect(gradeColor(6, 'tdf')).toBe(red);
+		expect(gradeColor(8.5, 'tdf')).toBe(red);
+		expect(gradeColor(9, 'tdf')).toBe(black);
+		expect(gradeColor(10, 'tdf')).toBe(black);
+	});
+
+	it('giro recolors the ascending ramp to pink but keeps the house cutoffs', () => {
+		expect(gradeColor(0, 'giro')).toBe('#f38cc7'); // lightest tint
+		expect(gradeColor(5, 'giro')).toBe('#e50083'); // the maglia-rosa base, mid-ramp
+		expect(gradeColor(12, 'giro')).toBe('#5c0034'); // darkest shade
+	});
+
+	it('default theme id resolves to the klym palette', () => {
+		expect(gradeColor(0, 'klym')).toBe(gradeColor(0));
+		expect(gradeColor(7, 'klym')).toBe(gradeColor(7));
+	});
+
+	it('descent stays gray in every theme', () => {
+		for (const { id } of COLOR_THEMES) {
+			expect(gradeColor(-3, id)).toBe('#64748b');
+		}
 	});
 });
