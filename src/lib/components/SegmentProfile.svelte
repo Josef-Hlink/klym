@@ -10,6 +10,7 @@
 	import type { RoutePoint } from '$lib/types.js';
 
 	export type GradeLabelMode = 'percent' | 'number' | 'off';
+	export type ProfileMode = 'raw' | 'straight' | 'smooth';
 
 	type Props = {
 		points: RoutePoint[];
@@ -20,8 +21,12 @@
 		title?: string;
 		subtitle?: string;
 		labelMode?: GradeLabelMode;
-		/** Straighten each section into a constant-grade ramp (the labelled grade). */
-		straightened?: boolean;
+		/**
+		 * Section rendering: 'raw' follows the GPS trace, 'straight' snaps each
+		 * section to a constant-grade ramp (the labelled grade), 'smooth' is the
+		 * straight profile with softened junctions. Labels/stats are unaffected.
+		 */
+		profileMode?: ProfileMode;
 		theme?: ColorTheme;
 		externalHoverDistM?: number | null;
 		hoverDistM?: number | null;
@@ -36,7 +41,7 @@
 		title = 'klym',
 		subtitle = '',
 		labelMode = 'percent',
-		straightened = false,
+		profileMode = 'raw',
 		theme = 'klym',
 		externalHoverDistM = null,
 		hoverDistM = $bindable(null),
@@ -91,8 +96,62 @@
 		return last.endEle;
 	}
 
+	// 'smooth' mode = the straight profile with softened junctions. We densely
+	// sample the straight ramps at uniform spacing, then run a short moving
+	// average: straight runs stay straight and only the kinks round off, over a
+	// near-constant on-screen width (uniform samples → the window is ~constant
+	// pixels regardless of segment length). Purely cosmetic — labels/stats and
+	// the grade per section are untouched.
+	const SMOOTH_SAMPLES = 500;
+	const SMOOTH_WINDOW = 9; // odd; corner reach ≈ SMOOTH_WINDOW/SMOOTH_SAMPLES of plotW
+
+	const smoothedProfile = $derived.by<{ dist: number; ele: number }[]>(() => {
+		if (profileMode !== 'smooth' || bins.length === 0) return [];
+		const a = bins[0].startM;
+		const b = bins[bins.length - 1].endM;
+		const span = b - a;
+		if (span <= 0) return [];
+		const raw = new Array<number>(SMOOTH_SAMPLES + 1);
+		for (let i = 0; i <= SMOOTH_SAMPLES; i++) {
+			raw[i] = straightenedEleAt(a + (span * i) / SMOOTH_SAMPLES);
+		}
+		const half = (SMOOTH_WINDOW - 1) / 2;
+		const out = new Array<{ dist: number; ele: number }>(SMOOTH_SAMPLES + 1);
+		for (let i = 0; i <= SMOOTH_SAMPLES; i++) {
+			let sum = 0;
+			let cnt = 0;
+			for (let k = -half; k <= half; k++) {
+				const j = i + k;
+				if (j < 0 || j > SMOOTH_SAMPLES) continue;
+				sum += raw[j];
+				cnt++;
+			}
+			out[i] = { dist: a + (span * i) / SMOOTH_SAMPLES, ele: sum / cnt };
+		}
+		// Pin the ends so the start/end elevation labels and end lines still land
+		// exactly on the profile.
+		out[0].ele = raw[0];
+		out[SMOOTH_SAMPLES].ele = raw[SMOOTH_SAMPLES];
+		return out;
+	});
+
+	function smoothEleAt(distM: number): number {
+		const pts = smoothedProfile;
+		if (pts.length === 0) return straightenedEleAt(distM);
+		const a = pts[0].dist;
+		const b = pts[pts.length - 1].dist;
+		if (distM <= a) return pts[0].ele;
+		if (distM >= b) return pts[pts.length - 1].ele;
+		const n = pts.length - 1;
+		const f = ((distM - a) / (b - a)) * n;
+		const i = Math.floor(f);
+		return pts[i].ele + (pts[i + 1].ele - pts[i].ele) * (f - i);
+	}
+
 	function eleAt(distM: number): number {
-		return straightened ? straightenedEleAt(distM) : findPointAtDistance(points, distM).ele;
+		if (profileMode === 'smooth') return smoothEleAt(distM);
+		if (profileMode === 'straight') return straightenedEleAt(distM);
+		return findPointAtDistance(points, distM).ele;
 	}
 
 	// Per-bin averages of optional activity streams. Each bin only carries a
@@ -189,12 +248,20 @@
 			endM: number;
 		}[] = [];
 		for (const bin of bins) {
-			// The top edge follows the raw curve, or — when straightened — a single
-			// straight ramp from the bin's start elevation to its end elevation.
+			// The top edge follows the raw curve, a single straight ramp
+			// (start→end elevation), or the smoothed ramp clipped to this bin.
 			const topPoints: { dist: number; ele: number }[] = [];
-			if (straightened) {
+			if (profileMode === 'straight') {
 				topPoints.push({ dist: bin.startM, ele: bin.startEle });
 				topPoints.push({ dist: bin.endM, ele: bin.endEle });
+			} else if (profileMode === 'smooth') {
+				topPoints.push({ dist: bin.startM, ele: smoothEleAt(bin.startM) });
+				for (const p of smoothedProfile) {
+					if (p.dist <= bin.startM) continue;
+					if (p.dist >= bin.endM) break;
+					topPoints.push(p);
+				}
+				topPoints.push({ dist: bin.endM, ele: smoothEleAt(bin.endM) });
 			} else {
 				const a = findPointAtDistance(points, bin.startM);
 				topPoints.push({ dist: a.cumDistM, ele: a.ele });
@@ -236,13 +303,22 @@
 	});
 
 	const elevPath = $derived.by(() => {
-		if (straightened) {
+		if (profileMode === 'straight') {
 			if (bins.length === 0) return '';
 			const parts = [
 				`M${xScale(bins[0].startM).toFixed(1)},${yScale(bins[0].startEle).toFixed(1)}`
 			];
 			for (const bin of bins) {
 				parts.push(`L${xScale(bin.endM).toFixed(1)},${yScale(bin.endEle).toFixed(1)}`);
+			}
+			return parts.join(' ');
+		}
+		if (profileMode === 'smooth') {
+			const pts = smoothedProfile;
+			if (pts.length === 0) return '';
+			const parts = [`M${xScale(pts[0].dist).toFixed(1)},${yScale(pts[0].ele).toFixed(1)}`];
+			for (let i = 1; i < pts.length; i++) {
+				parts.push(`L${xScale(pts[i].dist).toFixed(1)},${yScale(pts[i].ele).toFixed(1)}`);
 			}
 			return parts.join(' ');
 		}

@@ -1,5 +1,8 @@
 <script lang="ts">
-	import SegmentProfile, { type GradeLabelMode } from '$lib/components/SegmentProfile.svelte';
+	import SegmentProfile, {
+		type GradeLabelMode,
+		type ProfileMode
+	} from '$lib/components/SegmentProfile.svelte';
 	import SegmentMap from '$lib/components/SegmentMap.svelte';
 	import ActivityBadge from '$lib/components/ActivityBadge.svelte';
 	import KlymLogo from '$lib/components/KlymLogo.svelte';
@@ -46,7 +49,12 @@
 	let mapHoverDistM = $state<number | null>(null);
 	let chartHoverDistM = $state<number | null>(null);
 
-	let straightened = $state(false);
+	let profileMode = $state<ProfileMode>('raw');
+	const profileModeOptions: { value: ProfileMode; label: string }[] = [
+		{ value: 'raw', label: 'Raw' },
+		{ value: 'straight', label: 'Straight' },
+		{ value: 'smooth', label: 'Smooth' }
+	];
 	let theme = $state<ColorTheme>('klym');
 
 	let labelMode = $state<GradeLabelMode>('percent');
@@ -378,24 +386,19 @@
 		<div class="flex items-center gap-2">
 			<span class="text-xs font-medium uppercase tracking-wide text-neutral-500">Profile</span>
 			<div class="inline-flex overflow-hidden rounded-md border border-neutral-300 text-xs">
-				<button
-					type="button"
-					onclick={() => (straightened = false)}
-					class="px-2.5 py-1 font-medium transition-colors {!straightened
-						? 'bg-neutral-900 text-white'
-						: 'bg-white text-neutral-600 hover:bg-neutral-100'}"
-				>
-					Raw
-				</button>
-				<button
-					type="button"
-					onclick={() => (straightened = true)}
-					class="border-l border-neutral-300 px-2.5 py-1 font-medium transition-colors {straightened
-						? 'bg-neutral-900 text-white'
-						: 'bg-white text-neutral-600 hover:bg-neutral-100'}"
-				>
-					Straight
-				</button>
+				{#each profileModeOptions as opt, i (opt.value)}
+					<button
+						type="button"
+						onclick={() => (profileMode = opt.value)}
+						class="px-2.5 py-1 font-medium transition-colors {profileMode === opt.value
+							? 'bg-neutral-900 text-white'
+							: 'bg-white text-neutral-600 hover:bg-neutral-100'} {i > 0
+							? 'border-l border-neutral-300'
+							: ''}"
+					>
+						{opt.label}
+					</button>
+				{/each}
 			</div>
 		</div>
 		<div class="flex items-center gap-2">
@@ -456,7 +459,7 @@
 			{binSizeM}
 			bins={activeBins}
 			{labelMode}
-			{straightened}
+			{profileMode}
 			{theme}
 			externalHoverDistM={mapHoverDistM}
 			title="klym"
