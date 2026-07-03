@@ -167,6 +167,30 @@ export function categoryColor(category: ClimbCategory | null): string {
 	}
 }
 
+// Descents are climbs on the mirrored profile: negate the elevations, run
+// the exact same pipeline (both tiers included), then flip the stats back
+// into real-world terms. Grades and gainM come out negative (gainM is the
+// net drop), startEleM is the high start, and topEleM lands on the lowest
+// smoothed elevation — the bottom of the descent. Categories still grade
+// severity on the same score scale; the FIETS altitude bonus never fires on
+// the mirrored profile, so fiets reduces to the pure rise²/length term.
+export function detectDescents(
+	points: RoutePoint[],
+	params: Partial<ClimbDetectionParams> = {}
+): DetectedClimb[] {
+	const mirrored = points.map((p) => ({ ...p, ele: -p.ele }));
+	const flip = (c: DetectedClimb): DetectedClimb => ({
+		...c,
+		gainM: -c.gainM,
+		avgGrade: -c.avgGrade,
+		maxGrade: -c.maxGrade,
+		startEleM: -c.startEleM,
+		topEleM: -c.topEleM,
+		parts: c.parts?.map(flip)
+	});
+	return detectClimbs(mirrored, params).map(flip);
+}
+
 type Run = { i0: number; i1: number }; // inclusive range of climbing steps
 
 export function detectClimbs(

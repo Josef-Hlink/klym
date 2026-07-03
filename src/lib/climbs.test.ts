@@ -4,6 +4,7 @@ import {
 	categoryColor,
 	climbCategory,
 	detectClimbs,
+	detectDescents,
 	fietsIndex
 } from './climbs.js';
 import type { RoutePoint } from './types.js';
@@ -223,6 +224,73 @@ describe('detectClimbs', () => {
 		expect(climbs).toHaveLength(1);
 		expect(climbs[0].score).toBeGreaterThan(8000);
 		expect(climbs[0].category).toBeNull();
+	});
+});
+
+describe('detectDescents', () => {
+	it('finds nothing on a flat route or a pure climb', () => {
+		expect(detectDescents(legsRoute([{ lenM: 10000, grade: 0 }]))).toEqual([]);
+		expect(detectDescents(legsRoute([{ lenM: 5000, grade: 8 }]))).toEqual([]);
+	});
+
+	it('detects a clean descent with real-world (negative) stats', () => {
+		const route = legsRoute([
+			{ lenM: 2000, grade: 0 },
+			{ lenM: 5000, grade: -8 },
+			{ lenM: 2000, grade: 0 }
+		]);
+		const descents = detectDescents(route);
+		expect(descents).toHaveLength(1);
+		const d = descents[0];
+		expect(d.startM).toBeGreaterThan(1800);
+		expect(d.startM).toBeLessThan(2200);
+		expect(d.endM).toBeGreaterThan(6800);
+		expect(d.endM).toBeLessThan(7200);
+		// gainM is the net drop, grades are negative.
+		expect(d.gainM).toBeLessThan(-380);
+		expect(d.gainM).toBeGreaterThan(-405);
+		expect(d.avgGrade).toBeLessThan(-7.4);
+		expect(d.avgGrade).toBeGreaterThan(-8.3);
+		expect(d.maxGrade).toBeLessThan(-7.4);
+		// Route starts at 100 m and drops ~400 m; startEleM is the high point,
+		// topEleM the low point at the bottom.
+		expect(d.startEleM).toBeCloseTo(100, 0);
+		expect(d.topEleM).toBeCloseTo(-300, 0);
+		expect(d.startEleM).toBeGreaterThan(d.topEleM);
+	});
+
+	it('mirrors detectClimbs exactly on the inverted route', () => {
+		const route = legsRoute([
+			{ lenM: 3000, grade: 7 },
+			{ lenM: 800, grade: -5 },
+			{ lenM: 3000, grade: 7 }
+		]);
+		const inverted = route.map((p) => ({ ...p, ele: -p.ele }));
+		const climbs = detectClimbs(route);
+		const descents = detectDescents(inverted);
+		expect(descents).toHaveLength(climbs.length);
+		for (let i = 0; i < climbs.length; i++) {
+			expect(descents[i].startM).toBe(climbs[i].startM);
+			expect(descents[i].endM).toBe(climbs[i].endM);
+			expect(descents[i].gainM).toBeCloseTo(-climbs[i].gainM, 10);
+			expect(descents[i].avgGrade).toBeCloseTo(-climbs[i].avgGrade, 10);
+			expect(descents[i].parts?.length).toBe(climbs[i].parts?.length);
+		}
+	});
+
+	it('flips the stats of joined parts too', () => {
+		const route = legsRoute([
+			{ lenM: 3000, grade: -7 },
+			{ lenM: 800, grade: 5 },
+			{ lenM: 3000, grade: -7 }
+		]);
+		const descents = detectDescents(route);
+		expect(descents).toHaveLength(1);
+		expect(descents[0].parts).toHaveLength(2);
+		for (const part of descents[0].parts!) {
+			expect(part.avgGrade).toBeLessThan(-6);
+			expect(part.gainM).toBeLessThan(0);
+		}
 	});
 });
 
