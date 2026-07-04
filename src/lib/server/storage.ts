@@ -1,13 +1,22 @@
 import type { RouteData, RouteSummary, SegmentData } from '$lib/types.js';
+import { getBuiltinRoute } from './builtin.js';
 
 // In-memory, per-visitor storage. All data is scoped to an `owner` (the
 // anonymous klym_sid session id assigned in hooks.server.ts). Nothing is
 // persisted to disk: a process restart or an idle-session sweep drops it,
 // which is the intended behaviour for the hosted, login-less app.
+//
+// Reads additionally fall back to the shared read-only builtin registry
+// (builtin.ts — the TdF stages), so builtin routes open like any other.
+// Mutations never touch builtin data: route rename/delete miss and 404, and
+// segments saved on a builtin route live in a hidden per-session RouteRecord
+// that references the shared RouteData (no copy, excluded from listRoutes).
 
 interface RouteRecord {
 	route: RouteData;
 	segments: Map<string, SegmentData>;
+	/** Hidden segment overlay for a builtin route — skipped by listRoutes. */
+	builtin?: boolean;
 }
 
 interface Session {
@@ -71,7 +80,7 @@ function touch(owner: string): Session {
 }
 
 export async function routeExists(owner: string, id: string): Promise<boolean> {
-	return touch(owner).routes.has(id);
+	return touch(owner).routes.has(id) || (await getBuiltinRoute(id)) != null;
 }
 
 export async function writeRoute(owner: string, id: string, route: RouteData): Promise<void> {
@@ -86,18 +95,19 @@ export async function deleteRoute(owner: string, id: string): Promise<boolean> {
 
 export async function updateRouteName(owner: string, id: string, name: string): Promise<boolean> {
 	const rec = touch(owner).routes.get(id);
-	if (!rec) return false;
+	if (!rec || rec.builtin) return false;
 	rec.route = { ...rec.route, name };
 	return true;
 }
 
 export async function readRoute(owner: string, id: string): Promise<RouteData | null> {
-	return touch(owner).routes.get(id)?.route ?? null;
+	return touch(owner).routes.get(id)?.route ?? (await getBuiltinRoute(id));
 }
 
 export async function listRoutes(owner: string): Promise<RouteSummary[]> {
 	const summaries: RouteSummary[] = [];
-	for (const { route } of touch(owner).routes.values()) {
+	for (const { route, builtin } of touch(owner).routes.values()) {
+		if (builtin) continue;
 		const { points, bounds, ...rest } = route;
 		summaries.push({ ...rest, pointCount: points.length });
 	}
@@ -122,8 +132,16 @@ export async function readSegment(
 }
 
 export async function writeSegment(owner: string, segment: SegmentData): Promise<void> {
-	const rec = touch(owner).routes.get(segment.routeId);
-	if (!rec) return;
+	const session = touch(owner);
+	let rec = session.routes.get(segment.routeId);
+	if (!rec) {
+		// Saving onto a builtin route: materialize the hidden overlay record.
+		const route = await getBuiltinRoute(segment.routeId);
+		if (!route) return;
+		rec = { route, segments: new Map(), builtin: true };
+		session.routes.set(segment.routeId, rec);
+		evictOldest(session.routes, MAX_ROUTES_PER_SESSION, (v) => Date.parse(v.route.createdAt));
+	}
 	rec.segments.set(segment.id, segment);
 	evictOldest(rec.segments, MAX_SEGMENTS_PER_ROUTE, (v) => Date.parse(v.createdAt));
 }

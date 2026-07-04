@@ -40,7 +40,8 @@ Package manager is **pnpm**. Use `pnpm <script>`, not `pnpm exec <tool>`.
 
 ## Routes
 
-- `/` — upload + route list (SSR on)
+- `/` — upload + "Your routes" list + collapsible "Tour 🇫🇷 stages"
+  list of the builtin TdF routes (SSR on)
 - `/routes/[id]` — route viewer: map + chart + marker UI + segments
   list (SSR **off** — MapLibre and uPlot both need the DOM)
 - `/routes/[id]/segments/[segId]` — segment profile + export (SSR **off**
@@ -78,6 +79,27 @@ session, segments per route); conflicts return 409 inline.
 
 > Was filesystem-backed (`data/<route-id>/…`) through M9. The old `data/`
 > dir is now orphaned (still gitignored). See `HOSTING.md`.
+
+### Builtin example routes (`src/lib/server/builtin.ts`)
+
+The 21 Tour de France 2026 stages, bundled as GPX under
+`src/lib/server/tdf-2026/` (committed; whitespace/trailing-zero slimmed;
+source `cdn.cyclingstage.com/images/tour-de-france/2026/stage-{n}-route.gpx`
+— re-download to refresh, their stage-6 trace is currently ~57 km short of
+the official route). Loaded via `import.meta.glob(..., '?raw')`, parsed
+once per process on first access, shared **read-only by reference** across
+all sessions — zero per-visitor memory. Stage names/dates live in the
+`STAGES` table; ids are `tdf-2026-stage-{n}`; `builtin.test.ts` guards the
+table and that every bundled file parses.
+
+Storage integration: `readRoute`/`routeExists` fall back to the registry
+(session first, so nothing shadows a user's own data), which makes the
+viewer, explore and segment pages work unchanged. Rename/delete miss it
+and 404. Saving a segment on a stage materializes a *hidden* per-session
+`RouteRecord` (`builtin: true`, route shared by reference, skipped by
+`listRoutes`) so segments stay per-visitor without the stage appearing
+under "Your routes". The homepage marks today's stage (`todayStageId()`,
+Europe/Paris) with a yellow badge.
 
 ## Key design decisions
 

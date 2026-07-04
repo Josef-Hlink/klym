@@ -11,6 +11,8 @@
 	let selectedFile = $state<File | null>(null);
 	let fileInput: HTMLInputElement | null = $state(null);
 
+	let stagesOpen = $state(true);
+
 	let openMenuId = $state<string | null>(null);
 	let editingId = $state<string | null>(null);
 	let editingName = $state('');
@@ -110,6 +112,15 @@
 	}
 	function fmtDate(iso: string): string {
 		return new Date(iso).toLocaleDateString();
+	}
+	// Fixed locale so SSR and client render the same text (no hydration drift).
+	function fmtStageDate(date: string): string {
+		return new Date(`${date}T12:00:00Z`).toLocaleDateString('en-GB', {
+			weekday: 'short',
+			day: 'numeric',
+			month: 'short',
+			timeZone: 'UTC'
+		});
 	}
 </script>
 
@@ -257,11 +268,11 @@
 
 	<section>
 		<h2 class="mb-3 text-sm font-medium uppercase tracking-wide text-neutral-500">
-			Routes
+			Your routes
 		</h2>
 		{#if data.routes.length === 0}
 			<p class="text-sm text-neutral-500">
-				No routes yet. Upload one above to get started.
+				No routes yet. Upload one above, or browse the Tour stages below.
 			</p>
 		{:else}
 			{#if rowError}
@@ -422,4 +433,61 @@
 			</ul>
 		{/if}
 	</section>
+
+	{#if data.stages.length > 0}
+		<section class="mt-12">
+			<h2 class="mb-3 text-sm font-medium">
+				<button
+					type="button"
+					aria-expanded={stagesOpen}
+					onclick={() => (stagesOpen = !stagesOpen)}
+					class="flex items-center gap-1.5 uppercase tracking-wide text-neutral-500 hover:text-neutral-900"
+				>
+					<svg
+						class="h-3.5 w-3.5 shrink-0 transition-transform {stagesOpen ? 'rotate-90' : ''}"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						aria-hidden="true"
+					>
+						<polyline points="9 6 15 12 9 18" />
+					</svg>
+					Tour 🇫🇷 stages
+				</button>
+			</h2>
+			{#if stagesOpen}
+				<ul class="divide-y divide-neutral-200 rounded-lg border border-neutral-200 bg-white">
+					{#each data.stages as stage (stage.id)}
+						<li class="flex items-center hover:bg-neutral-50">
+							<a
+								href="/routes/{stage.id}"
+								class="flex flex-1 items-center justify-between gap-4 px-5 py-3.5"
+							>
+								<div>
+									<div class="flex items-center gap-2 font-medium">
+										Stage {stage.stage}
+										{#if stage.id === data.todayStageId}
+											<span
+												class="rounded bg-yellow-400 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-yellow-950"
+											>today</span>
+										{/if}
+									</div>
+									<div class="text-xs text-neutral-500">
+										{fmtStageDate(stage.date)} · {stage.start} → {stage.finish}
+									</div>
+								</div>
+								<div class="text-right text-sm text-neutral-600">
+									<div>{fmtKm(stage.totalDistM, 1)}</div>
+									<div class="text-xs text-neutral-500">+{fmtM(stage.totalAscentM)}</div>
+								</div>
+							</a>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		</section>
+	{/if}
 </main>

@@ -9,12 +9,17 @@ import {
 	updateRouteName,
 	writeRoute
 } from '$lib/server/storage.js';
+import { listBuiltinStages, todayStageId } from '$lib/server/builtin.js';
 import type { RouteData } from '$lib/types.js';
 
 const MAX_GPX_BYTES = 15 * 1024 * 1024;
 
 export const load: PageServerLoad = async ({ locals }) => {
-	return { routes: await listRoutes(locals.owner) };
+	return {
+		routes: await listRoutes(locals.owner),
+		stages: await listBuiltinStages(),
+		todayStageId: todayStageId()
+	};
 };
 
 export const actions: Actions = {
