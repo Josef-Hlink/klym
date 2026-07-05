@@ -8,14 +8,24 @@ import {
 	updateSegment,
 	writeSegment
 } from '$lib/server/storage.js';
+import {
+	checkGarminToken,
+	garminEnabled,
+	setGarminSlot
+} from '$lib/server/garmin.js';
+import { buildGarminPayload, sanitizeGarminClimbs } from '$lib/garmin.js';
 import { slugify } from '$lib/slug.js';
 import type { SegmentData } from '$lib/types.js';
 
-export const load: PageServerLoad = async ({ params, locals }) => {
+export const load: PageServerLoad = async ({ params, locals, cookies }) => {
 	const route = await readRoute(locals.owner, params.id);
 	if (!route) throw error(404, `Route "${params.id}" not found`);
 	const segments = await listSegments(locals.owner, params.id);
-	return { route, segments };
+	return {
+		route,
+		segments,
+		garminEnabled: garminEnabled() && checkGarminToken(cookies.get('klym_garmin'))
+	};
 };
 
 export const actions: Actions = {
@@ -85,6 +95,25 @@ export const actions: Actions = {
 		const ok = await updateSegment(locals.owner, params.id, segId, { name });
 		if (!ok) return fail(404, { scope: 'rename', error: 'Segment not found', segId });
 		return { scope: 'rename', success: true, id: segId };
+	},
+
+	sendToGarmin: async ({ request, params, locals, cookies }) => {
+		if (!garminEnabled() || !checkGarminToken(cookies.get('klym_garmin'))) {
+			return fail(403, { scope: 'garmin', error: 'This browser is not Garmin-linked' });
+		}
+		const route = await readRoute(locals.owner, params.id);
+		if (!route) return fail(404, { scope: 'garmin', error: 'Route not found' });
+		const form = await request.formData();
+		// The client's detections travel along (WYSIWYG with the preset the
+		// user picked); junk in, empty climbs out — the profile still works.
+		let raw: unknown = [];
+		try {
+			raw = JSON.parse(String(form.get('climbs') ?? '[]'));
+		} catch {
+			// keep raw = []
+		}
+		setGarminSlot(buildGarminPayload(route, sanitizeGarminClimbs(raw, route.totalDistM)));
+		return { scope: 'garmin', sent: true };
 	},
 
 	adjustSegment: async ({ request, params, locals }) => {

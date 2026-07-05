@@ -14,6 +14,7 @@
 		type SensitivityPreset
 	} from '$lib/climbs.js';
 	import { computeCropStats, gradeColor } from '$lib/elevation.js';
+	import { toGarminClimbInputs } from '$lib/garmin.js';
 	import { fmtKm, fmtM } from '$lib/format.js';
 	import type { PageProps } from './$types.js';
 
@@ -204,6 +205,18 @@
 			: null
 	);
 
+	// "Send to Garmin" pushes this route + the current detections into the
+	// server's device slot (see src/lib/server/garmin.ts). Only rendered when
+	// the browser holds the pairing cookie (data.garminEnabled).
+	let garminSending = $state(false);
+	let garminSent = $state(false);
+	const garminClimbsJson = $derived(JSON.stringify(toGarminClimbInputs(detectedClimbs)));
+	const garminError = $derived(
+		form && 'scope' in form && form.scope === 'garmin' && 'error' in form
+			? (form.error as string)
+			: null
+	);
+
 	function placeMarker(distM: number) {
 		if (markerA != null && markerB != null) {
 			if (distM < markerA) markerA = distM;
@@ -338,16 +351,61 @@
 			</div>
 			<p class="mt-1 text-xs text-neutral-500"><code>{route.id}</code></p>
 		</div>
-		<dl class="flex gap-6 text-right">
-			<div>
-				<dt class="text-xs uppercase tracking-wide text-neutral-500">Distance</dt>
-				<dd class="text-base font-medium">{fmtKm(route.totalDistM)}</dd>
-			</div>
-			<div>
-				<dt class="text-xs uppercase tracking-wide text-neutral-500">Ascent</dt>
-				<dd class="text-base font-medium">+{fmtM(route.totalAscentM)}</dd>
-			</div>
-		</dl>
+		<div class="flex flex-col items-end gap-1.5">
+			<dl class="flex gap-6 text-right">
+				<div>
+					<dt class="text-xs uppercase tracking-wide text-neutral-500">Distance</dt>
+					<dd class="text-base font-medium">{fmtKm(route.totalDistM)}</dd>
+				</div>
+				<div>
+					<dt class="text-xs uppercase tracking-wide text-neutral-500">Ascent</dt>
+					<dd class="text-base font-medium">+{fmtM(route.totalAscentM)}</dd>
+				</div>
+			</dl>
+			{#if data.garminEnabled}
+				<form
+					method="POST"
+					action="?/sendToGarmin"
+					use:enhance={() => {
+						garminSending = true;
+						return async ({ result, update }) => {
+							garminSending = false;
+							if (result.type === 'success') {
+								garminSent = true;
+								setTimeout(() => (garminSent = false), 2500);
+							}
+							await update();
+						};
+					}}
+				>
+					<input type="hidden" name="climbs" value={garminClimbsJson} />
+					<button
+						type="submit"
+						disabled={garminSending}
+						class="flex items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-900 disabled:opacity-50"
+					>
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							class="h-3.5 w-3.5"
+						>
+							<path
+								d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"
+							/>
+							<path d="m21.854 2.147-10.94 10.939" />
+						</svg>
+						{garminSending ? 'Sending…' : garminSent ? 'Sent ✓' : 'Send to Garmin'}
+					</button>
+				</form>
+				{#if garminError}
+					<p class="text-xs text-red-600">{garminError}</p>
+				{/if}
+			{/if}
+		</div>
 	</header>
 
 	<section class="space-y-3">
