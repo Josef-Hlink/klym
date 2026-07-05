@@ -1,5 +1,6 @@
 import Toybox.Communications;
 import Toybox.Lang;
+import Toybox.System;
 import Toybox.WatchUi;
 
 // Fetches the current route through the paired phone. Data fields have no
@@ -49,6 +50,17 @@ class RouteFetcher {
     }
 
     function onResponse(code, data) {
+        System.println("klym fetch: code=" + code);
+        if (data instanceof Dictionary) {
+            System.println("klym fetch: v=" + data["v"] + " step=" + data["step"]
+                + " dist=" + data["dist"]
+                + " e?" + (data["e"] instanceof Array)
+                + " lat?" + (data["lat"] instanceof Array)
+                + " lon?" + (data["lon"] instanceof Array)
+                + " c?" + (data["c"] instanceof Array));
+        } else if (data != null) {
+            System.println("klym fetch: data is " + data);
+        }
         if (code == 200) {
             var m = RouteModel.fromJson(data);
             if (m != null) {
