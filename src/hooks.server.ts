@@ -9,6 +9,14 @@ const COOKIE = 'klym_sid';
 // session cookie: the browser drops it when the session ends, which together
 // with the server-side idle sweep is what makes routes vanish after a visit.
 export const handle: Handle = async ({ event, resolve }) => {
+	// The Garmin device endpoint is token-authed and cookie-less: minting a
+	// session per fetch would leak phantom sessions into storage, and the
+	// Connect IQ HTTP stack chokes on unexpected response headers.
+	if (event.url.pathname.startsWith('/api/garmin/')) {
+		event.locals.owner = 'garmin-device';
+		return resolve(event);
+	}
+
 	let sid = event.cookies.get(COOKIE);
 	if (!sid) {
 		sid = randomUUID();
