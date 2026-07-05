@@ -1,0 +1,5 @@
+bin/
+source/Config.mc
+secrets.token
+*.der
+*.pem

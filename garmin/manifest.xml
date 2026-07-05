@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<iq:manifest version="3" xmlns:iq="http://www.garmin.com/xml/connectiq">
+    <iq:application
+        id="9fae861ef6c04b98943faddb584b38dc"
+        type="datafield"
+        name="@Strings.AppName"
+        entry="KlymApp"
+        launcherIcon="@Drawables.LauncherIcon"
+        minApiLevel="5.0.0">
+        <iq:products>
+            <iq:product id="edge540"/>
+        </iq:products>
+        <iq:permissions>
+            <iq:uses-permission id="Communications"/>
+            <iq:uses-permission id="Positioning"/>
+        </iq:permissions>
+        <iq:languages>
+            <iq:language>eng</iq:language>
+        </iq:languages>
+        <iq:barrels/>
+    </iq:application>
+</iq:manifest>
