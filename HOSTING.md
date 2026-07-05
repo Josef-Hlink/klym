@@ -221,6 +221,39 @@ services.klym = {
 
 Set any of them to `"infinity"` to disable that limit.
 
+## Garmin integration (optional)
+
+The Connect IQ data field in `garmin/` fetches "the current route" from
+`GET /api/garmin/current?token=…`. The whole feature is gated on one shared
+secret: set `KLYM_GARMIN_TOKEN` in an environment file outside the Nix store
+and point the module at it — with it unset, the endpoints don't exist
+(401/404 everywhere).
+
+```sh
+# on the host, once:
+install -m 600 /dev/null /etc/klym.env
+echo "KLYM_GARMIN_TOKEN=$(openssl rand -hex 24)" > /etc/klym.env
+```
+
+```nix
+services.klym = {
+  enable = true;
+  origin = "https://klym.example.com";
+  environmentFile = "/etc/klym.env";
+};
+```
+
+Then, once per browser, visit
+`https://klym.example.com/garmin/setup?token=<the token>` — that sets a
+year-long cookie which makes the **Send to Garmin** button appear on route
+pages. The device build bakes the same token in via `garmin/secrets.token`
+(see `garmin/README.md`).
+
+The route slot is in-memory like everything else: every deploy or restart
+empties it, so re-send the route from the browser before riding. Anyone who
+has the token can read/overwrite the single slot — it's a personal feature;
+rotate the token in the env file if it ever leaks.
+
 ## Not in scope (yet)
 
 - **Strava sign-in / route import** — the next milestone. OAuth needs exactly

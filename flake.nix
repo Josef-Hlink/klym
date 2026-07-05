@@ -10,7 +10,11 @@
         "x86_64-linux"
         "aarch64-linux"
       ];
+      # The package/module only target deployment (linux); the devShell also
+      # runs on the Mac where the Connect IQ toolchain (garmin/) lives.
+      devSystems = systems ++ [ "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+      forDevSystems = nixpkgs.lib.genAttrs devSystems;
       pkgsFor = system: nixpkgs.legacyPackages.${system};
     in
     {
@@ -154,6 +158,18 @@
                 "infinity" to disable.
               '';
             };
+
+            environmentFile = lib.mkOption {
+              type = lib.types.nullOr lib.types.path;
+              default = null;
+              example = "/run/secrets/klym.env";
+              description = ''
+                systemd EnvironmentFile with secrets, kept out of the Nix
+                store. Currently just KLYM_GARMIN_TOKEN=… — the shared secret
+                for the Garmin Connect IQ integration (see garmin/ and
+                HOSTING.md). Unset leaves the Garmin endpoints disabled.
+              '';
+            };
           };
 
           config = lib.mkIf cfg.enable {
@@ -172,6 +188,7 @@
               };
 
               serviceConfig = {
+                EnvironmentFile = lib.mkIf (cfg.environmentFile != null) cfg.environmentFile;
                 ExecStart = "${pkgs.nodejs_24}/bin/node ${cfg.package}/lib/klym/build/index.js";
                 WorkingDirectory = "${cfg.package}/lib/klym";
                 Restart = "on-failure";
@@ -199,5 +216,30 @@
             };
           };
         };
+
+      # For the Connect IQ toolchain in garmin/: monkeyc needs a JDK, and the
+      # SDK itself is a manual SDK Manager install whose bin dir gets pulled
+      # onto PATH from the manager's current-sdk.cfg pointer. gpsbabel covers
+      # GPX→FIT conversion for simulator activity playback.
+      devShells = forDevSystems (
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        {
+          default = pkgs.mkShell {
+            packages = [
+              pkgs.jdk21
+              pkgs.gpsbabel
+            ];
+            shellHook = ''
+              ciq_cfg="$HOME/Library/Application Support/Garmin/ConnectIQ/current-sdk.cfg"
+              if [ -f "$ciq_cfg" ]; then
+                export PATH="$(cat "$ciq_cfg")/bin:$PATH"
+              fi
+            '';
+          };
+        }
+      );
     };
 }

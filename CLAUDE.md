@@ -51,6 +51,9 @@ Package manager is **pnpm**. Use `pnpm <script>`, not `pnpm exec <tool>`.
   climbs/descents open here on click. Both pages are thin wrappers
   around `SegmentView.svelte`, which owns stats, section controls, the
   CF chart, the 3D topo map and the export menu.
+- `/api/garmin/current?token=` + `/garmin/setup?token=` — the Garmin
+  device feed and its one-time browser pairing page (see the Garmin
+  integration note below). Both 401/404 unless `KLYM_GARMIN_TOKEN` is set.
 
 Server loads (`+page.server.ts`) still run server-side even with
 `ssr = false`; only HTML rendering is skipped.
@@ -326,6 +329,35 @@ the corresponding bar/polyline section). Parent wires them through
 **two separate state vars** (`mapHoverDistM`, `chartHoverDistM`) — do
 NOT bind both ends to the same variable, that would loop.
 
+### Garmin integration (`garmin/` + `/api/garmin`)
+
+A Connect IQ **data field** for the Edge 540 ("klym on the handlebars"):
+whole-route colored-bar profile with a you-are-here marker, auto-zoom
+into the current detected climb. Personal/sideloaded, Monkey C, built
+with a Makefile in `garmin/` (SDK is a manual SDK Manager install; the
+devShell supplies the JDK — see `garmin/README.md`).
+
+Web side: `buildGarminPayload` (`src/lib/garmin.ts`, pure + tested)
+resamples a route onto one fixed step (≤ ~1200 samples) and emits
+compact integer arrays — elevation in **decimeters**, lat/lon ×1e5,
+climbs as `[startM, endM, cat, avgGrade10, gainM, maxGrade10]` tuples
+(cat: 0 uncat, 1='4'…5='HC') — because the Edge 540 gives a data field
+only ~125 KB and Monkey C dictionaries have brutal per-key overhead.
+The device computes bar grades from the elevation array itself.
+
+Flow: "Send to Garmin" (route viewer header, form action
+`sendToGarmin`) pushes the payload into a single in-memory slot
+(`src/lib/server/garmin.ts`, outside session storage — the device has
+no cookie); the field fetches `GET /api/garmin/current?token=…` via the
+paired phone. Everything is gated on the `KLYM_GARMIN_TOKEN` env var
+(`$env/dynamic/private`; `.env` has `devtoken` for dev): unset = feature
+off; the send button only renders when the browser holds the pairing
+cookie from `/garmin/setup?token=…`. The client's *current* detections
+travel in a hidden `climbs` form field (WYSIWYG with the preset picker)
+through `sanitizeGarminClimbs`. Slot empties on every restart/deploy —
+re-send before riding. `garmin/source/Palette.mc` mirrors the klym
+THEME_BANDS + categoryColor values; keep them in sync by hand.
+
 ## UI conventions
 
 - Tailwind only, no component library.
@@ -358,11 +390,14 @@ in-memory owner-scoped storage, Nix flake + NixOS module + hosting guide
 (`HOSTING.md`); deployed live behind a Cloudflare Tunnel · M11 climb
 autodetection in the route viewer (`src/lib/climbs.ts`): two-tier gap
 bridging, expandable parts, hover preview + quick-save, three sensitivity
-presets (see the autodetection note above).
+presets (see the autodetection note above) · M12 Garmin Connect IQ
+integration (`garmin/` + the send/fetch endpoints; see the Garmin note
+above) — web side live-verified, device field written but pending the
+one-time SDK install for simulator/on-bike verification.
 
 ## Next milestone (planned)
 
-M12 Strava sign-in + route/activity import (OAuth2). Routes via
+M13 Strava sign-in + route/activity import (OAuth2). Routes via
 `/routes/{id}/export_gpx` reuse `parseGpx` as-is; activities via
 `/activities/{id}/streams` map to `RoutePoint[]` and carry HR/power/
 cadence natively. The HTTPS callback URL it needs is already live:
