@@ -102,3 +102,8 @@ module — see [HOSTING.md](./HOSTING.md).
 ## License
 
 MIT. See [LICENSE](./LICENSE).
+
+The bundled Tour de France 2026 stage traces (`src/lib/server/tdf-2026/`,
+sourced from [cyclingstage.com](https://www.cyclingstage.com/)) are included
+as example data only; the route data belongs to its respective owners and is
+not covered by the MIT license.
