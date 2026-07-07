@@ -178,12 +178,21 @@ class Renderer {
         drawProfile(dc, model, dStart, dEnd, MARGIN, yProf, wProf, hProf,
             sections, d.toFloat());
 
-        // Rider marker inside the window.
+        // Rider marker inside the window. d can sit past the window during
+        // the exit hysteresis (up to 100 m beyond the top) — clamp so the
+        // dot parks on the edge instead of overflowing the profile rect.
         var span = dEnd - dStart;
         if (span > 0 && sections.size() > 0) {
-            var mx = MARGIN + (wProf * (d - dStart) / span).toNumber();
+            var dm = d.toFloat();
+            if (dm < dStart) {
+                dm = dStart;
+            }
+            if (dm > dEnd) {
+                dm = dEnd;
+            }
+            var mx = MARGIN + (wProf * (dm - dStart) / span).toNumber();
             drawRider(dc, mx, yProf,
-                surfaceY(model, sections, d.toFloat(), dStart, dEnd, yProf, hProf));
+                surfaceY(model, sections, dm, dStart, dEnd, yProf, hProf));
         }
 
         // Position track: the whole climb as klym's classic 500 m

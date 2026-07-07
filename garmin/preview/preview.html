@@ -219,10 +219,14 @@ class Renderer {
     const wProf = w - 2 * MARGIN;
     this.drawProfile(dc, model, dStart, dEnd, MARGIN, yProf, wProf, hProf, sections, d);
 
+    // d can sit past the window during the exit hysteresis (up to 100 m
+    // beyond the top) — clamp so the dot parks on the edge instead of
+    // overflowing the profile rect.
     const span = dEnd - dStart;
-    if (span > 0) {
-      const mx = MARGIN + Math.trunc(wProf * (d - dStart) / span);
-      this.drawRider(dc, mx, yProf, hProf, this.surfaceY(model, sections, d, dStart, dEnd, yProf, hProf));
+    if (span > 0 && sections.length > 0) {
+      const dm = Math.min(Math.max(d, dStart), dEnd);
+      const mx = MARGIN + Math.trunc(wProf * (dm - dStart) / span);
+      this.drawRider(dc, mx, yProf, hProf, this.surfaceY(model, sections, dm, dStart, dEnd, yProf, hProf));
     }
 
     // Position track: the whole climb as klym's classic 500 m colored-bar
