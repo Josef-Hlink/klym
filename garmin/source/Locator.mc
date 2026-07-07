@@ -1,36 +1,50 @@
 import Toybox.Lang;
 import Toybox.Math;
 
-// Along-track position from GPS. Works in the payload's own units: a flat
-// plane of (lat, lon*cos(midLat)) in 1e-5-degree ticks (1 tick ~ 1.11 m).
-// Normal operation is a windowed nearest-vertex scan around the last
-// match, refined by projecting onto the two adjacent segments; repeated
-// misses trigger a cheap strided full rescan, then OFF_ROUTE. With no fix
-// (or while lost briefly) it dead-reckons on elapsedDistance for display
-// continuity only — ClimbState never trusts a dead-reckoned position.
+// Along-track position from GPS + the activity odometer, fused with a
+// complementary filter. Works in the payload's own units: a flat plane of
+// (lat, lon*cos(midLat)) in 1e-5-degree ticks (1 tick ~ 1.11 m).
+//
+// Raw geometric matching cannot be displayed directly: on hairpin roads
+// (Alpe d'Huez: 21 of them) adjacent legs run 15-30 m apart while the
+// nearest *vertex* on the rider's own leg can be step/2 (~55 m) away, so
+// nearest-vertex matching flips legs and the along-track output hops
+// hundreds of meters — verified against synthetic noisy rides over the
+// real stage-19 track by ../preview/locator-sim.cjs, the JS twin of this
+// file (keep in sync; run it after changes here). Design that passed:
+//
+// 1. The *output* advances by the odometer (elapsedDistance delta) —
+//    smooth and monotone while riding forward.
+// 2. GPS matches (point-to-SEGMENT projection in a tight window around
+//    the expected position — segments, not vertices, so parallel legs
+//    disambiguate) only pull the output by K x gap, clamped to CORR_MAX
+//    per tick. Wrong-leg flips become sub-noise nudges that cancel.
+// 3. Persistent disagreement beyond SNAP_M snaps after SNAP_TICKS
+//    (rider rejoined the route somewhere else); backtracking is simply
+//    tracked by the clamped correction (up to CORR_MAX m/s backwards).
+// 4. No fix, or no acceptable match: coast on the odometer alone
+//    (deadReckoned = true — ClimbState never *enters* a climb on it).
+//    3 straight misses = OFF_ROUTE, cheap strided rescans every 5th fix,
+//    2 hits to reacquire (output snaps to the new match).
 class Locator {
     const ACCEPT_SQ = 8100.0; // ~(100 m / 1.11 m)^2
-    const WINDOW = 40;
-    // Hairpin roads (Alpe d'Huez: 21 of them) put already-ridden legs
-    // 15-30 m from the current one, so pure nearest-vertex matching
-    // flip-flops backwards. Bias forward: small backward search allowance,
-    // a score penalty on backward candidates, and a two-tick debounce on
-    // large backward jumps (genuine backtracking still wins after 2 s).
-    const BACK_WINDOW = 4;
-    const BACK_PENALTY = 3.0;
-    const BACK_JUMP_M = 200;
+    const TIGHT = 3; // +-samples around the expected position
+    const WINDOW = 40; // rescue scan half-width
+    const K = 0.25; // fraction of the GPS-vs-odometer gap applied per tick
+    const CORR_MAX = 12.0; // max correction, m/tick
+    const SNAP_M = 250.0; // persistent disagreement beyond this snaps
+    const SNAP_TICKS = 5;
 
     hidden var _model;
     hidden var _cosLat;
 
-    hidden var _lastIdx = -1;
+    hidden var _outD = null; // the filtered along-track output
+    hidden var _lastElapsed = null;
     hidden var _misses = 0;
     hidden var _hits = 0;
     hidden var _offRoute = false;
     hidden var _sinceRescan = 0;
-    hidden var _lastMatchD = null;
-    hidden var _elapsedAtMatch = null;
-    hidden var _backJumps = 0;
+    hidden var _snapTicks = 0;
 
     var deadReckoned = false;
 
@@ -47,9 +61,27 @@ class Locator {
     // Returns along-track meters (Float) or null when unknown.
     function locate(info) {
         deadReckoned = false;
+        var dElapsed = 0.0;
+        if (info.elapsedDistance != null) {
+            if (_lastElapsed != null) {
+                dElapsed = info.elapsedDistance - _lastElapsed;
+                if (dElapsed < 0) {
+                    dElapsed = 0.0;
+                }
+            }
+            _lastElapsed = info.elapsedDistance;
+        }
+        var expected = null;
+        if (_outD != null && !_offRoute) {
+            expected = _outD + dElapsed;
+            if (expected > _model.distM) {
+                expected = _model.distM.toFloat();
+            }
+        }
+
         var loc = info.currentLocation;
         if (loc == null) {
-            return _deadReckon(info);
+            return _coast(expected);
         }
         var deg = loc.toDegrees();
         var pLat = deg[0] * 100000.0;
@@ -64,20 +96,34 @@ class Locator {
             _sinceRescan = 0;
         }
 
-        var r;
-        if (_lastIdx >= 0 && !_offRoute) {
-            r = _scanBiased(pLat, pLon, _lastIdx - BACK_WINDOW, _lastIdx + WINDOW, _lastIdx);
+        var r; // [alongTrackD or null, distSq]
+        if (expected != null) {
+            var ci = _model.idxOfDist(expected);
+            r = _scanSegments(pLat, pLon, ci - TIGHT, ci + TIGHT);
+            if (r[1] > ACCEPT_SQ) {
+                var v = _scan(pLat, pLon, ci - WINDOW, ci + WINDOW, 1);
+                if (v[0] >= 0) {
+                    r = _scanSegments(pLat, pLon, v[0] - 2, v[0] + 2);
+                }
+            }
         } else {
-            r = _scan(pLat, pLon, 0, _model.count() - 1, 4);
-            if (r[0] >= 0) {
-                r = _scan(pLat, pLon, r[0] - 4, r[0] + 4, 1);
+            var v2 = _scan(pLat, pLon, 0, _model.count() - 1, 4);
+            r = [null, 9.9e15];
+            if (v2[0] >= 0) {
+                r = _scanSegments(pLat, pLon, v2[0] - 4, v2[0] + 4);
             }
         }
 
-        if (r[0] < 0 || r[1] > ACCEPT_SQ) {
-            return _miss(info);
+        if (r[0] == null || r[1] > ACCEPT_SQ) {
+            _hits = 0;
+            _misses += 1;
+            if (_misses >= 3) {
+                _offRoute = true;
+                _outD = null;
+            }
+            return _coast(expected);
         }
-
+        var m = r[0];
         _misses = 0;
         _hits += 1;
         if (_offRoute) {
@@ -85,53 +131,96 @@ class Locator {
                 return null; // want two consecutive hits to reacquire
             }
             _offRoute = false;
+            _outD = m; // reacquired: snap
+            _snapTicks = 0;
+            return _outD;
         }
-
-        var d = _refine(pLat, pLon, r[0]);
-        if (_lastMatchD != null && d < _lastMatchD - BACK_JUMP_M) {
-            _backJumps += 1;
-            if (_backJumps < 2) {
-                return _deadReckon(info); // hold course for one tick
+        if (expected == null) {
+            _outD = m;
+            _snapTicks = 0;
+            return _outD;
+        }
+        var diff = m - expected;
+        if (diff > SNAP_M || diff < -SNAP_M) {
+            _snapTicks += 1;
+            if (_snapTicks >= SNAP_TICKS) {
+                _outD = m; // rider genuinely elsewhere on the route
+                _snapTicks = 0;
+                return _outD;
             }
+            return _coast(expected);
         }
-        _backJumps = 0;
-        _lastIdx = r[0];
-        _lastMatchD = d;
-        _elapsedAtMatch = info.elapsedDistance;
-        return d;
+        _snapTicks = 0;
+        var corr = K * diff;
+        if (corr > CORR_MAX) {
+            corr = CORR_MAX;
+        }
+        if (corr < -CORR_MAX) {
+            corr = -CORR_MAX;
+        }
+        _outD = expected + corr;
+        return _outD;
     }
 
-    // Windowed nearest-vertex like _scan, but candidates behind the pivot
-    // must be markedly closer to win (hairpin disambiguation). The returned
-    // distSq is the raw one so the ACCEPT_SQ check stays geometric.
-    hidden function _scanBiased(pLat, pLon, lo, hi, pivot) {
-        if (lo < 0) {
-            lo = 0;
+    // Odometer-only progression when GPS is missing or untrusted.
+    hidden function _coast(expected) {
+        if (expected == null) {
+            return null;
+        }
+        deadReckoned = true;
+        _outD = expected;
+        return expected;
+    }
+
+    // Nearest point-to-segment projection over segments [iLo, iHi) ->
+    // [alongTrackD or null, distSq]. Segments, not vertices: the rider's
+    // own leg is always ~noise-distance away, an adjacent hairpin leg
+    // never is.
+    hidden function _scanSegments(pLat, pLon, iLo, iHi) {
+        if (iLo < 0) {
+            iLo = 0;
         }
         var n = _model.count();
-        if (hi > n - 1) {
-            hi = n - 1;
+        if (iHi > n - 1) {
+            iHi = n - 1;
         }
-        var best = -1;
-        var bestSq = 9.9e15;
-        var bestScore = 9.9e15;
+        var px = pLon * _cosLat;
+        var py = pLat;
+        var dBest = null;
+        var sqBest = 9.9e15;
         var lats = _model.lat;
         var lons = _model.lon;
-        for (var i = lo; i <= hi; i++) {
-            var dLat = pLat - lats[i];
-            var dLon = (pLon - lons[i]) * _cosLat;
-            var sq = dLat * dLat + dLon * dLon;
-            var score = i < pivot - 1 ? sq * BACK_PENALTY : sq;
-            if (score < bestScore) {
-                bestScore = score;
-                bestSq = sq;
-                best = i;
+        for (var a = iLo; a < iHi; a++) {
+            var b = a + 1;
+            var ax = lons[a] * _cosLat;
+            var ay = lats[a].toFloat();
+            var vx = lons[b] * _cosLat - ax;
+            var vy = lats[b] - ay;
+            var vv = vx * vx + vy * vy;
+            var t = 0.0;
+            if (vv > 0) {
+                t = ((px - ax) * vx + (py - ay) * vy) / vv;
+                if (t < 0) {
+                    t = 0.0;
+                }
+                if (t > 1) {
+                    t = 1.0;
+                }
+            }
+            var dx = px - (ax + vx * t);
+            var dy = py - (ay + vy * t);
+            var sq = dx * dx + dy * dy;
+            if (sq < sqBest) {
+                sqBest = sq;
+                var d0 = _model.distOfIdx(a).toFloat();
+                dBest = d0 + (_model.distOfIdx(b) - d0) * t;
             }
         }
-        return [best, bestSq];
+        return [dBest, sqBest];
     }
 
     // Nearest vertex in [lo, hi] by squared planar distance; [idx, distSq].
+    // Coarse pre-pass for the rescue and full-rescan paths.
     hidden function _scan(pLat, pLon, lo, hi, stride) {
         if (lo < 0) {
             lo = 0;
@@ -154,70 +243,5 @@ class Locator {
             }
         }
         return [best, bestSq];
-    }
-
-    // Project onto the segments flanking vertex i for ~10-20 m along-track
-    // accuracy despite the coarse sample step.
-    hidden function _refine(pLat, pLon, i) {
-        var px = pLon * _cosLat;
-        var py = pLat;
-        var dBest = _model.distOfIdx(i).toFloat();
-        var sqBest = 9.9e15;
-        for (var s = -1; s <= 0; s++) {
-            var a = i + s;
-            var b = a + 1;
-            if (a < 0 || b >= _model.count()) {
-                continue;
-            }
-            var ax = _model.lon[a] * _cosLat;
-            var ay = _model.lat[a].toFloat();
-            var vx = _model.lon[b] * _cosLat - ax;
-            var vy = _model.lat[b] - ay;
-            var vv = vx * vx + vy * vy;
-            var t = 0.0;
-            if (vv > 0) {
-                t = ((px - ax) * vx + (py - ay) * vy) / vv;
-                if (t < 0) {
-                    t = 0.0;
-                }
-                if (t > 1) {
-                    t = 1.0;
-                }
-            }
-            var dx = px - (ax + vx * t);
-            var dy = py - (ay + vy * t);
-            var sq = dx * dx + dy * dy;
-            if (sq < sqBest) {
-                sqBest = sq;
-                var d0 = _model.distOfIdx(a).toFloat();
-                dBest = d0 + (_model.distOfIdx(b) - d0) * t;
-            }
-        }
-        return dBest;
-    }
-
-    hidden function _miss(info) {
-        _hits = 0;
-        _misses += 1;
-        if (_misses >= 3) {
-            _offRoute = true;
-            _lastIdx = -1;
-        }
-        return _deadReckon(info);
-    }
-
-    hidden function _deadReckon(info) {
-        if (_offRoute) {
-            return null;
-        }
-        if (_lastMatchD == null || _elapsedAtMatch == null || info.elapsedDistance == null) {
-            return null;
-        }
-        deadReckoned = true;
-        var d = _lastMatchD + (info.elapsedDistance - _elapsedAtMatch);
-        if (d > _model.distM) {
-            d = _model.distM.toFloat();
-        }
-        return d;
     }
 }

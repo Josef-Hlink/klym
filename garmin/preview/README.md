@@ -18,7 +18,12 @@ Gap → Alpe d'Huez, with real balanced-preset detections — 10 climbs, HC
 finish). To swap routes, regenerate it as
 `const PAYLOAD = <payload JSON>;`.
 
-**This is a copy, not a source of truth.** The Monkey C under `../source/`
+`locator-sim.cjs` is the same idea for `Locator.mc`: a line-faithful JS
+port driven by synthetic noisy GPS rides over the payload track (the Alpe
+d'Huez hairpins are the hard part), asserting the along-track output never
+hops backwards. `node locator-sim.cjs` after any locator change.
+
+**These are copies, not sources of truth.** The Monkey C under `../source/`
 is the real implementation; when you change one side, port the change to
 the other by hand. Garmin fonts are approximated, so text metrics are
 close but not exact.
