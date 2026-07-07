@@ -78,3 +78,30 @@ the fetch immediately.
 `make build` alone reuses whatever `source/Config.mc` exists (defaults to
 the simulator config) — use the explicit `config`/`sim-config` targets when
 switching targets.
+
+## Fetch-once, by design
+
+The field fetches the route **once per activity** and then goes quiet —
+no polling, no surprise route swaps mid-ride, no radio chatter. Sending a
+new route from the browser does nothing to an already-open activity;
+back out of the activity and re-enter it and the rebuilt field fetches
+fresh. Rule of thumb: send the route you want, *then* open the activity.
+
+## Store listing draft (for an eventual public release)
+
+> klym draws the elevation profile of the route you're riding, colored by
+> gradient — and inside a climb it zooms to a sliding window of the road
+> ahead, ClimbPro-style, with constant-grade sections and % labels.
+>
+> Requires a klym server: send a route from the klym web app, then the
+> field fetches it through your phone at the start of each activity.
+> Configure the server URL and pairing token in the app settings (Garmin
+> Connect → device → Connect IQ apps → klym).
+>
+> Notes:
+> - The route is fetched once, when you open the activity. Sent a new
+>   route? Back out of the activity and re-enter it.
+> - The server keeps one route per token ("what am I riding right now"),
+>   and it's cleared on server restarts — re-send before you ride.
+> - No token configured = the field tells you on screen. A phone with
+>   Garmin Connect must be paired and nearby for the fetch.
