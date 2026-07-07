@@ -12,6 +12,9 @@ class KlymField extends WatchUi.DataField {
     hidden var _locator = null;
     hidden var _climbs = null;
     hidden var _d = null;
+    hidden var _routeSections = null;
+    hidden var _climbSections = null;
+    hidden var _climbSectionsIdx = -1;
 
     function initialize() {
         DataField.initialize();
@@ -29,11 +32,28 @@ class KlymField extends WatchUi.DataField {
             _locator = new Locator(model);
             _climbs = new ClimbState(model);
         }
+        if (_routeSections == null) {
+            _routeSections = Sections.compute(model, 0, model.count() - 1,
+                Sections.EPS_ROUTE_DM);
+        }
         _d = _locator.locate(info);
         _climbs.update(_d, !_locator.deadReckoned);
+        // Section boundaries stay fixed for the whole climb (only the
+        // window slides), so compute them once per climb entry.
+        if (_climbs.current != _climbSectionsIdx) {
+            _climbSectionsIdx = _climbs.current;
+            _climbSections = null;
+            if (_climbSectionsIdx >= 0) {
+                var c = model.climbs[_climbSectionsIdx];
+                _climbSections = Sections.compute(model,
+                    model.idxOfDist(c[0]), model.idxOfDist(c[1]),
+                    Sections.EPS_CLIMB_DM);
+            }
+        }
     }
 
     function onUpdate(dc) {
-        _renderer.draw(dc, getBackgroundColor(), _fetcher, _locator, _climbs, _d);
+        _renderer.draw(dc, getBackgroundColor(), _fetcher, _locator, _climbs, _d,
+            _routeSections, _climbSections);
     }
 }

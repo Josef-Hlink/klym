@@ -3,17 +3,21 @@ import Toybox.Lang;
 
 // All drawing for the field, sized off the actual Dc so a 1-field page on
 // the Edge 540 (246x322) is the design target but nothing is hardcoded to
-// it. Two real views — whole-route profile and climb zoom — plus status
-// screens while the fetcher isn't loaded.
+// it. Profiles are drawn ClimbPro-style: a filled silhouette of the
+// simplified profile (the section chords from Sections.mc), colored by
+// klym's grade bands with % labels where a block is wide enough. The
+// climb view is a ±1 km sliding window around the rider, with a slim
+// position track showing which slice of the whole climb is on screen.
 class Renderer {
     const MARGIN = 6;
+    const LABEL_MIN_PX = 24;
 
     hidden var _bg;
     hidden var _fg;
     hidden var _subtle;
-    hidden var _muted; // ridden-portion bars in the zoom view
+    hidden var _muted; // ridden part of the route silhouette
 
-    function draw(dc, bg, fetcher, locator, climbState, d) {
+    function draw(dc, bg, fetcher, locator, climbState, d, routeSections, climbSections) {
         _bg = bg;
         var dark = bg == Graphics.COLOR_BLACK;
         _fg = dark ? Graphics.COLOR_WHITE : Graphics.COLOR_BLACK;
@@ -30,10 +34,10 @@ class Renderer {
 
         var model = fetcher.model;
         var zoomIdx = climbState != null ? climbState.current : -1;
-        if (zoomIdx >= 0 && d != null) {
-            drawZoom(dc, model, zoomIdx, d, locator);
+        if (zoomIdx >= 0 && d != null && climbSections != null) {
+            drawZoom(dc, model, zoomIdx, d, locator, climbSections);
         } else {
-            drawRoute(dc, model, d, locator, climbState);
+            drawRoute(dc, model, d, locator, climbState, routeSections);
         }
     }
 
@@ -58,7 +62,7 @@ class Renderer {
         dc.drawText(w / 2, h / 2 + 6, Graphics.FONT_SMALL, msg, Graphics.TEXT_JUSTIFY_CENTER);
     }
 
-    hidden function drawRoute(dc, model, d, locator, climbState) {
+    hidden function drawRoute(dc, model, d, locator, climbState, sections) {
         var w = dc.getWidth();
         var h = dc.getHeight();
         var hT = dc.getFontHeight(Graphics.FONT_TINY);
@@ -82,13 +86,17 @@ class Renderer {
                 Graphics.TEXT_JUSTIFY_RIGHT);
         }
 
-        var yBars = 2 + 2 * hT + 10;
-        var hBars = h - 64 - yBars;
-        drawBars(dc, model, 0, model.count() - 1, MARGIN, yBars, w - 2 * MARGIN, hBars, -1);
+        var yProf = 2 + 2 * hT + 10;
+        var hProf = h - 64 - yProf;
+        if (sections != null) {
+            drawProfile(dc, model, 0.0, model.distM.toFloat(), MARGIN, yProf,
+                w - 2 * MARGIN, hProf, sections, d != null ? d : -1.0);
+        }
 
-        if (d != null) {
-            drawMarker(dc, MARGIN, yBars, w - 2 * MARGIN, hBars,
-                d.toFloat() / model.distM);
+        if (d != null && sections != null && sections.size() > 0) {
+            var mx = MARGIN + ((w - 2 * MARGIN) * (d.toFloat() / model.distM)).toNumber();
+            drawRider(dc, mx, yProf, surfaceY(model, sections, d.toFloat(),
+                0.0, model.distM.toFloat(), yProf, hProf));
         }
 
         drawGradePill(dc, MARGIN, h - 56, currentGrade(model, d));
@@ -97,9 +105,11 @@ class Renderer {
             var ni = climbState.next(d);
             if (ni >= 0) {
                 var c = model.climbs[ni];
+                var what = c[2] >= 5 ? "HC"
+                    : c[2] >= 1 ? "cat " + Palette.catLabel(c[2]) : "climb";
                 dc.setColor(_subtle, Graphics.COLOR_TRANSPARENT);
                 dc.drawText(w - MARGIN, h - 52, Graphics.FONT_TINY,
-                    Palette.catLabel(c[2]) + " in " + fmtKm1(c[0] - d) + " km",
+                    what + " in " + fmtKm1(c[0] - d) + " km",
                     Graphics.TEXT_JUSTIFY_RIGHT);
                 dc.drawText(w - MARGIN, h - 52 + hT, Graphics.FONT_TINY,
                     fmtKm1(c[1] - c[0]) + " km at " + (c[3] / 10.0).format("%.1f") + "%",
@@ -108,11 +118,12 @@ class Renderer {
         }
     }
 
-    hidden function drawZoom(dc, model, idx, d, locator) {
+    hidden function drawZoom(dc, model, idx, d, locator, sections) {
         var w = dc.getWidth();
         var h = dc.getHeight();
         var hT = dc.getFontHeight(Graphics.FONT_TINY);
         var hS = dc.getFontHeight(Graphics.FONT_SMALL);
+        var hM = dc.getFontHeight(Graphics.FONT_MEDIUM);
         var c = model.climbs[idx];
 
         // Category badge + "climb i/n".
@@ -124,14 +135,19 @@ class Renderer {
         dc.drawText(MARGIN + bw / 2, 6, Graphics.FONT_SMALL, label, Graphics.TEXT_JUSTIFY_CENTER);
         dc.setColor(_subtle, Graphics.COLOR_TRANSPARENT);
         dc.drawText(MARGIN + bw + 8, 6, Graphics.FONT_TINY,
-            "climb " + (idx + 1) + "/" + model.climbs.size(), Graphics.TEXT_JUSTIFY_LEFT);
+            (idx + 1) + "/" + model.climbs.size(), Graphics.TEXT_JUSTIFY_LEFT);
         if (locator != null && locator.isOffRoute()) {
             dc.setColor(0xdc2626, Graphics.COLOR_TRANSPARENT);
             dc.drawText(w - MARGIN, 6, Graphics.FONT_TINY, "off route",
                 Graphics.TEXT_JUSTIFY_RIGHT);
+        } else {
+            // Whole-climb summary, so the window never hides the big picture.
+            dc.drawText(w - MARGIN, 6, Graphics.FONT_TINY,
+                fmtKm1(c[1] - c[0]) + " km @ " + (c[3] / 10.0).format("%.1f") + "%",
+                Graphics.TEXT_JUSTIFY_RIGHT);
         }
 
-        // Remaining distance and gain.
+        // Remaining distance and gain, big — the glanceable stuff.
         var remM = c[1] - d;
         if (remM < 0) {
             remM = 0.0;
@@ -142,95 +158,239 @@ class Renderer {
         }
         var y1 = 8 + hS;
         dc.setColor(_fg, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(MARGIN, y1, Graphics.FONT_SMALL, fmtKm1(remM) + " km left",
+        dc.drawText(MARGIN, y1, Graphics.FONT_MEDIUM, fmtKm1(remM) + " km",
             Graphics.TEXT_JUSTIFY_LEFT);
-        dc.drawText(w - MARGIN, y1, Graphics.FONT_SMALL,
-            remGain.toNumber().toString() + " m up", Graphics.TEXT_JUSTIFY_RIGHT);
+        dc.drawText(w - MARGIN, y1, Graphics.FONT_MEDIUM,
+            "+" + remGain.toNumber().toString() + " m", Graphics.TEXT_JUSTIFY_RIGHT);
 
-        var i0 = model.idxOfDist(c[0]);
-        var i1 = model.idxOfDist(c[1]);
-        var yBars = y1 + hS + 12;
-        var hBars = h - 64 - yBars;
-        drawBars(dc, model, i0, i1, MARGIN, yBars, w - 2 * MARGIN, hBars, model.idxOfDist(d));
+        // Sliding window: +-1 km around the rider, clamped to the climb.
+        var dStart = d.toFloat() - 1000;
+        var dEnd = d.toFloat() + 1000;
+        if (dStart < c[0]) {
+            dStart = c[0].toFloat();
+        }
+        if (dEnd > c[1]) {
+            dEnd = c[1].toFloat();
+        }
+        var yProf = y1 + hM + 10;
+        var hProf = h - 77 - yProf; // leave room for the position track
+        var wProf = w - 2 * MARGIN;
+        drawProfile(dc, model, dStart, dEnd, MARGIN, yProf, wProf, hProf,
+            sections, d.toFloat());
 
-        var span = (c[1] - c[0]).toFloat();
-        var frac = span > 0 ? (d - c[0]) / span : 0.0;
-        if (frac < 0) {
-            frac = 0.0;
+        // Rider marker inside the window.
+        var span = dEnd - dStart;
+        if (span > 0 && sections.size() > 0) {
+            var mx = MARGIN + (wProf * (d - dStart) / span).toNumber();
+            drawRider(dc, mx, yProf,
+                surfaceY(model, sections, d.toFloat(), dStart, dEnd, yProf, hProf));
         }
-        if (frac > 1) {
-            frac = 1.0;
+
+        // Position track: the whole climb as klym's classic 500 m
+        // colored-bar strip, the on-screen window bracketed in fg.
+        var climbLen = (c[1] - c[0]).toFloat();
+        var ty = yProf + hProf + 8;
+        var th = 6;
+        if (climbLen > 0) {
+            for (var b0 = c[0].toFloat(); b0 < c[1]; b0 += 500) {
+                var b1 = b0 + 500;
+                if (b1 > c[1]) {
+                    b1 = c[1].toFloat();
+                }
+                if (b1 - b0 < 50) {
+                    break;
+                }
+                var g = (model.eleMAt(b1) - model.eleMAt(b0)) / (b1 - b0) * 100;
+                var xs = (wProf * (b0 - c[0]) / climbLen).toNumber();
+                var xe = (wProf * (b1 - c[0]) / climbLen).toNumber() - 1;
+                if (xe <= xs) {
+                    continue;
+                }
+                dc.setColor(Palette.colorFor(g), Graphics.COLOR_TRANSPARENT);
+                dc.fillRectangle(MARGIN + xs, ty, xe - xs, th);
+            }
+            var wx0 = (wProf * (dStart - c[0]) / climbLen).toNumber();
+            var wx1 = (wProf * (dEnd - c[0]) / climbLen).toNumber();
+            if (wx1 - wx0 < 6) {
+                wx1 = wx0 + 6;
+            }
+            dc.setColor(_fg, Graphics.COLOR_TRANSPARENT);
+            dc.fillRectangle(MARGIN + wx0, ty - 3, wx1 - wx0, 2);
+            dc.fillRectangle(MARGIN + wx0, ty + th + 1, wx1 - wx0, 2);
+            dc.fillRectangle(MARGIN + wx0, ty - 3, 2, th + 6);
+            dc.fillRectangle(MARGIN + wx1 - 2, ty - 3, 2, th + 6);
         }
-        drawMarker(dc, MARGIN, yBars, w - 2 * MARGIN, hBars, frac);
 
         drawGradePill(dc, MARGIN, h - 56, currentGrade(model, d));
         dc.setColor(_subtle, Graphics.COLOR_TRANSPARENT);
         dc.drawText(w - MARGIN, h - 52 + hT / 2, Graphics.FONT_TINY,
-            "avg left " + model.gradePct(model.idxOfDist(d), i1).format("%.1f") + "%",
+            "avg left " + model.gradePct(model.idxOfDist(d), model.idxOfDist(c[1])).format("%.1f") + "%",
             Graphics.TEXT_JUSTIFY_RIGHT);
     }
 
-    // Profile bars for sample range [i0, i1] in rect (x, y, w, h), scaled to
-    // the range's own min/max elevation. Samples below riddenIdx draw muted.
-    hidden function drawBars(dc, model, i0, i1, x, y, w, h, riddenIdx) {
-        var span = i1 - i0;
-        if (span < 1 || w < 4 || h < 4) {
-            return;
+    // y of the silhouette surface at distance d (same scaling math as
+    // drawProfile, so the rider dot sits exactly on the drawn edge).
+    hidden function surfaceY(model, sections, d, dStart, dEnd, yProf, hProf) {
+        var lo = 9.9e15;
+        var hi = -9.9e15;
+        for (var s = 0; s < sections.size(); s++) {
+            var vs = sections[s][0] > dStart ? sections[s][0] : dStart;
+            var ve = sections[s][1] < dEnd ? sections[s][1] : dEnd;
+            if (ve <= vs) {
+                continue;
+            }
+            var eA = chordEleDm(sections[s], vs);
+            var eB = chordEleDm(sections[s], ve);
+            if (eA < lo) {
+                lo = eA;
+            }
+            if (eB < lo) {
+                lo = eB;
+            }
+            if (eA > hi) {
+                hi = eA;
+            }
+            if (eB > hi) {
+                hi = eB;
+            }
         }
-        var barPx = 3;
-        var nBars = w / barPx;
-        if (nBars > span) {
-            nBars = span;
-            barPx = w / nBars;
+        var range = hi - lo;
+        if (range < 20) {
+            range = 20.0;
         }
-        var lo = model.e[i0];
-        var hi = lo;
-        for (var i = i0 + 1; i <= i1; i++) {
-            if (model.e[i] < lo) {
-                lo = model.e[i];
-            }
-            if (model.e[i] > hi) {
-                hi = model.e[i];
-            }
+        var si = 0;
+        while (si < sections.size() - 1 && d >= sections[si][1]) {
+            si++;
         }
-        var range = (hi - lo).toFloat();
-        if (range < 10) {
-            range = 10.0;
+        var ch = (hProf * (chordEleDm(sections[si], d) - lo) / range).toNumber();
+        if (ch < 1) {
+            ch = 1;
         }
-        var perBar = span.toFloat() / nBars;
-        for (var b = 0; b < nBars; b++) {
-            var s0 = i0 + (perBar * b).toNumber();
-            var s1 = i0 + (perBar * (b + 1)).toNumber();
-            if (s1 <= s0) {
-                s1 = s0 + 1;
-            }
-            if (s1 > i1) {
-                s1 = i1;
-            }
-            // Bucket height follows its peak so summits stay visible.
-            var peak = model.e[s0];
-            for (var i = s0 + 1; i <= s1; i++) {
-                if (model.e[i] > peak) {
-                    peak = model.e[i];
-                }
-            }
-            var bh = (h * (peak - lo) / range).toNumber();
-            if (bh < 2) {
-                bh = 2;
-            }
-            var color = riddenIdx >= 0 && s1 < riddenIdx
-                ? _muted
-                : Palette.colorFor(model.gradePct(s0, s1));
-            dc.setColor(color, Graphics.COLOR_TRANSPARENT);
-            dc.fillRectangle(x + b * barPx, y + h - bh, barPx - 1, bh);
+        if (ch > hProf) {
+            ch = hProf;
         }
+        return yProf + hProf - ch;
     }
 
-    hidden function drawMarker(dc, x, y, w, h, frac) {
-        var mx = x + (w * frac).toNumber();
+    // Thin stem from the top of the profile area down to a ring dot sitting
+    // on the silhouette surface.
+    hidden function drawRider(dc, mx, yProf, sy) {
         dc.setColor(_fg, Graphics.COLOR_TRANSPARENT);
-        dc.fillRectangle(mx, y, 2, h);
-        dc.fillPolygon([[mx - 4, y - 7], [mx + 6, y - 7], [mx + 1, y]]);
+        dc.fillRectangle(mx, yProf - 2, 2, sy - yProf - 2);
+        dc.fillPolygon([[mx - 4, yProf - 8], [mx + 6, yProf - 8], [mx + 1, yProf - 1]]);
+        dc.fillCircle(mx + 1, sy, 5);
+        dc.setColor(_bg, Graphics.COLOR_TRANSPARENT);
+        dc.fillCircle(mx + 1, sy, 2);
+    }
+
+    // Elevation (decimeters) on a section's chord at distance d — the
+    // simplified profile the silhouette is drawn from.
+    hidden function chordEleDm(s, d) {
+        var run = s[1] - s[0];
+        if (run <= 0) {
+            return s[3];
+        }
+        var t = (d - s[0]) / run;
+        if (t < 0) {
+            t = 0.0;
+        }
+        if (t > 1) {
+            t = 1.0;
+        }
+        return s[3] + (s[4] - s[3]) * t;
+    }
+
+    // Filled silhouette of the *simplified* profile for [dStart, dEnd] in
+    // rect (x, y, w, h): 1 px columns along the section chords, colored by
+    // the section's grade band, scaled to the window's own chord min/max.
+    // Columns before riddenUntilD draw muted. Wide-enough sections get a
+    // % label.
+    hidden function drawProfile(dc, model, dStart, dEnd, x, y, w, h, sections, riddenUntilD) {
+        var span = dEnd - dStart;
+        if (span <= 0 || w < 4 || h < 8 || sections.size() == 0) {
+            return;
+        }
+
+        // Chords are monotone within a section, so the window's extremes
+        // live at (clamped) section edges.
+        var lo = 9.9e15;
+        var hi = -9.9e15;
+        for (var s = 0; s < sections.size(); s++) {
+            var vs = sections[s][0] > dStart ? sections[s][0] : dStart;
+            var ve = sections[s][1] < dEnd ? sections[s][1] : dEnd;
+            if (ve <= vs) {
+                continue;
+            }
+            var eA = chordEleDm(sections[s], vs);
+            var eB = chordEleDm(sections[s], ve);
+            if (eA < lo) {
+                lo = eA;
+            }
+            if (eB < lo) {
+                lo = eB;
+            }
+            if (eA > hi) {
+                hi = eA;
+            }
+            if (eB > hi) {
+                hi = eB;
+            }
+        }
+        var range = hi - lo;
+        if (range < 20) {
+            range = 20.0;
+        }
+
+        var si = 0;
+        for (var px = 0; px < w; px++) {
+            var dist = dStart + span * px / w;
+            while (si < sections.size() - 1 && dist >= sections[si][1]) {
+                si++;
+            }
+            var ch = (h * (chordEleDm(sections[si], dist) - lo) / range).toNumber();
+            if (ch < 1) {
+                ch = 1;
+            }
+            if (ch > h) {
+                ch = h;
+            }
+            var color = riddenUntilD >= 0 && dist < riddenUntilD
+                ? _muted
+                : Palette.colorFor(sections[si][2]);
+            dc.setColor(color, Graphics.COLOR_TRANSPARENT);
+            dc.fillRectangle(x + px, y + h - ch, 1, ch);
+        }
+
+        // % labels on blocks wide enough to carry them.
+        var fontH = dc.getFontHeight(Graphics.FONT_XTINY);
+        for (var s = 0; s < sections.size(); s++) {
+            var vs = sections[s][0] > dStart ? sections[s][0] : dStart;
+            var ve = sections[s][1] < dEnd ? sections[s][1] : dEnd;
+            if (ve <= vs) {
+                continue;
+            }
+            var midD = (vs + ve) / 2;
+            if (riddenUntilD >= 0 && midD < riddenUntilD) {
+                continue;
+            }
+            var pxw = ((ve - vs) / span * w).toNumber();
+            if (pxw < LABEL_MIN_PX) {
+                continue;
+            }
+            var g = sections[s][2];
+            var text = (g + (g >= 0 ? 0.5 : -0.5)).toNumber().toString() + "%";
+            var mx = x + ((midD - dStart) / span * w).toNumber();
+            var colH = (h * (chordEleDm(sections[s], midD) - lo) / range).toNumber();
+            if (colH >= fontH + 6) {
+                dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
+                dc.drawText(mx, y + h - (colH + fontH) / 2, Graphics.FONT_XTINY, text,
+                    Graphics.TEXT_JUSTIFY_CENTER);
+            } else {
+                dc.setColor(_subtle, Graphics.COLOR_TRANSPARENT);
+                dc.drawText(mx, y + h - colH - fontH - 1, Graphics.FONT_XTINY, text,
+                    Graphics.TEXT_JUSTIFY_CENTER);
+            }
+        }
     }
 
     hidden function drawGradePill(dc, x, y, grade) {
