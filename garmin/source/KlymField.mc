@@ -15,6 +15,8 @@ class KlymField extends WatchUi.DataField {
     hidden var _routeSections = null;
     hidden var _climbSections = null;
     hidden var _climbSectionsIdx = -1;
+    hidden var _demoD = null;
+    hidden var _demoStart = 0.0;
 
     function initialize() {
         DataField.initialize();
@@ -36,8 +38,16 @@ class KlymField extends WatchUi.DataField {
             _routeSections = Sections.compute(model, 0, model.count() - 1,
                 Sections.EPS_ROUTE_DM);
         }
-        _d = _locator.locate(info);
-        _climbs.update(_d, !_locator.deadReckoned);
+        if (Config.DEMO && info.currentLocation == null) {
+            // Sim-only self-riding mode (make sim-config DEMO=true): no fix
+            // means no activity playback, so ride the route ourselves for
+            // hands-off visual checks. Any real fix takes over immediately.
+            _d = _demoTick(model);
+            _climbs.update(_d, true);
+        } else {
+            _d = _locator.locate(info);
+            _climbs.update(_d, !_locator.deadReckoned);
+        }
         // Section boundaries stay fixed for the whole climb (only the
         // window slides), so compute them once per climb entry.
         if (_climbs.current != _climbSectionsIdx) {
@@ -55,5 +65,26 @@ class KlymField extends WatchUi.DataField {
     function onUpdate(dc) {
         _renderer.draw(dc, getBackgroundColor(), _fetcher, _locator, _climbs, _d,
             _routeSections, _climbSections);
+    }
+
+    // Advances 30 m per compute tick, starting 900 m before the first
+    // climb; wraps back there past the route end.
+    hidden function _demoTick(model) {
+        if (_demoD == null) {
+            _demoStart = 0.0;
+            if (model.climbs.size() > 0) {
+                _demoStart = model.climbs[0][0].toFloat() - 900;
+                if (_demoStart < 0) {
+                    _demoStart = 0.0;
+                }
+            }
+            _demoD = _demoStart;
+            return _demoD;
+        }
+        _demoD += 30;
+        if (_demoD > model.distM) {
+            _demoD = _demoStart;
+        }
+        return _demoD;
     }
 }

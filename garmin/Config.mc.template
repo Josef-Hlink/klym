@@ -5,4 +5,7 @@
 module Config {
     const BASE_URL = "__KLYM_BASE_URL__";
     const TOKEN = "__KLYM_TOKEN__";
+    // Sim-only: with no GPS fix the field rides the route by itself
+    // (KlymField._demoTick). Always false in device builds.
+    const DEMO = __KLYM_DEMO__;
 }

@@ -14,18 +14,24 @@ SIM_BASE_URL ?= http://127.0.0.1:1047
 
 .PHONY: build sim sideload config sim-config clean
 
+# Sim-only self-riding mode; device builds always get false.
+DEMO ?= false
+
 # Device config: real server + the token from secrets.token (gitignored).
 config:
 	@test -f $(TOKEN_FILE) || { echo "missing $(TOKEN_FILE) — put the KLYM_GARMIN_TOKEN value in it"; exit 1; }
 	@sed -e "s|__KLYM_BASE_URL__|$(BASE_URL)|" -e "s|__KLYM_TOKEN__|$$(cat $(TOKEN_FILE))|" \
+		-e "s|__KLYM_DEMO__|false|" \
 		Config.mc.template > source/Config.mc
 	@echo "source/Config.mc -> $(BASE_URL)"
 
 # Simulator config: the pnpm dev server on :1047 with the .env devtoken.
+# DEMO=true makes the field ride the route by itself when playback is off.
 sim-config:
 	@sed -e "s|__KLYM_BASE_URL__|$(SIM_BASE_URL)|" -e "s|__KLYM_TOKEN__|devtoken|" \
+		-e "s|__KLYM_DEMO__|$(DEMO)|" \
 		Config.mc.template > source/Config.mc
-	@echo "source/Config.mc -> $(SIM_BASE_URL) (devtoken)"
+	@echo "source/Config.mc -> $(SIM_BASE_URL) (devtoken, demo=$(DEMO))"
 
 # Builds with whatever source/Config.mc is present (sim-config if none yet);
 # run `make config build` explicitly for a device build.

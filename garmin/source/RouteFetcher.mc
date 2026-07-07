@@ -66,6 +66,8 @@ class RouteFetcher {
             if (m != null) {
                 model = m;
                 state = LOADED;
+                var st = System.getSystemStats();
+                System.println("klym mem: " + st.usedMemory + "/" + st.totalMemory);
                 WatchUi.requestUpdate();
                 return;
             }
