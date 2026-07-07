@@ -1,5 +1,7 @@
+import Toybox.Application;
 import Toybox.Communications;
 import Toybox.Lang;
+import Toybox.PersistedContent;
 import Toybox.System;
 import Toybox.WatchUi;
 
@@ -15,6 +17,7 @@ class RouteFetcher {
         LOADED,
         NO_ROUTE,
         NO_PHONE,
+        NO_TOKEN,
         FAILED
     }
 
@@ -37,10 +40,26 @@ class RouteFetcher {
     }
 
     function request() {
+        // Compile-time Config wins when non-empty (sim builds bake the dev
+        // server + devtoken); store builds leave it empty and read the
+        // Connect IQ app settings instead.
+        var base = Config.BASE_URL;
+        if (base.length() == 0) {
+            base = _prop("baseUrl");
+        }
+        var token = Config.TOKEN;
+        if (token.length() == 0) {
+            token = _prop("token");
+        }
+        if (base.length() == 0 || token.length() == 0) {
+            state = NO_TOKEN;
+            _cooldown = 15; // settings can arrive from the phone any moment
+            return;
+        }
         state = REQUESTING;
         Communications.makeWebRequest(
-            Config.BASE_URL + "/api/garmin/current",
-            { "token" => Config.TOKEN },
+            base + "/api/garmin/current",
+            { "token" => token },
             {
                 :method => Communications.HTTP_REQUEST_METHOD_GET,
                 :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
@@ -49,7 +68,21 @@ class RouteFetcher {
         );
     }
 
-    function onResponse(code, data) {
+    // Retry right away (settings changed, e.g. the token just arrived).
+    function poke() {
+        if (state != LOADED && state != REQUESTING) {
+            _cooldown = 0;
+            _backoff = 5;
+        }
+    }
+
+    hidden function _prop(key) {
+        var v = Application.Properties.getValue(key);
+        return v instanceof String ? v : "";
+    }
+
+    function onResponse(code as Number,
+            data as Dictionary or String or PersistedContent.Iterator or Null) as Void {
         System.println("klym fetch: code=" + code);
         if (data instanceof Dictionary) {
             System.println("klym fetch: v=" + data["v"] + " step=" + data["step"]

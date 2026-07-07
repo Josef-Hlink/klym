@@ -51,6 +51,8 @@ class Renderer {
             msg = "no route sent";
         } else if (s == RouteFetcher.NO_PHONE) {
             msg = "waiting for phone";
+        } else if (s == RouteFetcher.NO_TOKEN) {
+            msg = "set token in app settings";
         } else if (s == RouteFetcher.FAILED) {
             msg = "error " + fetcher.errorCode;
         } else {

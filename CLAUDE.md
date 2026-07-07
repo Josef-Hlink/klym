@@ -342,9 +342,15 @@ it's inherently smoothed) colored by klym's grade bands with % labels,
 plus the whole climb as a 500 m colored-bar strip bracketing the
 on-screen slice. Rider = ring dot on the silhouette surface. Route
 sections are cached once per load, climb sections once per climb entry.
-Personal/sideloaded, Monkey C, built with a Makefile in `garmin/` (SDK
-is a manual SDK Manager install; the devShell supplies the JDK — see
-`garmin/README.md`). Two sim-only dev aids: `make sim-config DEMO=true`
+Monkey C, built with a Makefile in `garmin/` (SDK is a manual SDK
+Manager install; the devShell supplies the JDK — see `garmin/README.md`).
+Distributed via the **Connect IQ store** (`make package` → `bin/klym.iq`
+→ developer dashboard): store binaries are public, so the server URL and
+token are Connect IQ **app settings** (`resources/settings/`), read via
+`Application.Properties` with compile-time `Config` overrides that only
+sim builds fill in (sideloading exists but the Edge x40 MTP write path
+is unreliable — read-only state, all stacks/OSes). Two sim-only dev
+aids: `make sim-config DEMO=true`
 bakes a self-riding mode (rides the loaded route when there's no GPS
 fix), and `garmin/preview/preview.html` is a JS/canvas port of the
 renderer for browser-side design iteration — **keep it in sync with

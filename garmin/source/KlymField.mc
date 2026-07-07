@@ -24,6 +24,10 @@ class KlymField extends WatchUi.DataField {
         _renderer = new Renderer();
     }
 
+    function onSettingsChanged() {
+        _fetcher.poke();
+    }
+
     function compute(info) {
         _fetcher.tick();
         var model = _fetcher.model;

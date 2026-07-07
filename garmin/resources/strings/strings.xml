@@ -1,3 +1,5 @@
 <strings>
     <string id="AppName">klym</string>
+    <string id="SetToken">Pairing token</string>
+    <string id="SetBaseUrl">klym server URL</string>
 </strings>
