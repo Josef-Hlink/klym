@@ -1,0 +1,8 @@
+<settings>
+    <setting propertyKey="@Properties.token" title="@Strings.SetToken">
+        <settingConfig type="alphaNumeric"/>
+    </setting>
+    <setting propertyKey="@Properties.baseUrl" title="@Strings.SetBaseUrl">
+        <settingConfig type="alphaNumeric"/>
+    </setting>
+</settings>

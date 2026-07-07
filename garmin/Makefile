@@ -6,24 +6,23 @@ SDK_CFG := $(HOME)/Library/Application Support/Garmin/ConnectIQ/current-sdk.cfg
 SDK := $(shell cat "$(SDK_CFG)" 2>/dev/null)
 KEY ?= $(HOME)/.config/garmin/developer_key.der
 DEVICE ?= edge540
-TOKEN_FILE ?= secrets.token
 PRG := bin/klym.prg
+IQ := bin/klym.iq
 
-BASE_URL ?= https://klym.hlink.dev
 SIM_BASE_URL ?= http://127.0.0.1:1047
 
-.PHONY: build sim sideload config sim-config clean
+.PHONY: build package sim sideload config sim-config clean
 
 # Sim-only self-riding mode; device builds always get false.
 DEMO ?= false
 
-# Device config: real server + the token from secrets.token (gitignored).
+# Store/device config: no baked secrets — server URL and token come from
+# the Connect IQ app settings (set in Garmin Connect on the phone).
 config:
-	@test -f $(TOKEN_FILE) || { echo "missing $(TOKEN_FILE) — put the KLYM_GARMIN_TOKEN value in it"; exit 1; }
-	@sed -e "s|__KLYM_BASE_URL__|$(BASE_URL)|" -e "s|__KLYM_TOKEN__|$$(cat $(TOKEN_FILE))|" \
+	@sed -e "s|__KLYM_BASE_URL__||" -e "s|__KLYM_TOKEN__||" \
 		-e "s|__KLYM_DEMO__|false|" \
 		Config.mc.template > source/Config.mc
-	@echo "source/Config.mc -> $(BASE_URL)"
+	@echo "source/Config.mc -> store (URL + token from app settings)"
 
 # Simulator config: the pnpm dev server on :1047 with the .env devtoken.
 # DEMO=true makes the field ride the route by itself when playback is off.
@@ -40,6 +39,14 @@ build:
 	@test -f source/Config.mc || $(MAKE) sim-config
 	@mkdir -p bin
 	"$(SDK)/bin/monkeyc" -f monkey.jungle -d $(DEVICE) -o $(PRG) -y "$(KEY)" -w -l 0
+
+# Store package: exported, release-mode .iq for upload to the Connect IQ
+# store (https://apps.garmin.com/developer/dashboard).
+package: config
+	@test -n "$(SDK)" || { echo "Connect IQ SDK not found — install it via the SDK Manager (README.md)"; exit 1; }
+	@mkdir -p bin
+	"$(SDK)/bin/monkeyc" -f monkey.jungle -e -r -o $(IQ) -y "$(KEY)" -w
+	@echo "$(IQ) ready for store upload"
 
 sim: sim-config build
 	"$(SDK)/bin/connectiq" || true
