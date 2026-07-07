@@ -11,6 +11,14 @@ import Toybox.Math;
 class Locator {
     const ACCEPT_SQ = 8100.0; // ~(100 m / 1.11 m)^2
     const WINDOW = 40;
+    // Hairpin roads (Alpe d'Huez: 21 of them) put already-ridden legs
+    // 15-30 m from the current one, so pure nearest-vertex matching
+    // flip-flops backwards. Bias forward: small backward search allowance,
+    // a score penalty on backward candidates, and a two-tick debounce on
+    // large backward jumps (genuine backtracking still wins after 2 s).
+    const BACK_WINDOW = 4;
+    const BACK_PENALTY = 3.0;
+    const BACK_JUMP_M = 200;
 
     hidden var _model;
     hidden var _cosLat;
@@ -22,6 +30,7 @@ class Locator {
     hidden var _sinceRescan = 0;
     hidden var _lastMatchD = null;
     hidden var _elapsedAtMatch = null;
+    hidden var _backJumps = 0;
 
     var deadReckoned = false;
 
@@ -57,7 +66,7 @@ class Locator {
 
         var r;
         if (_lastIdx >= 0 && !_offRoute) {
-            r = _scan(pLat, pLon, _lastIdx - WINDOW, _lastIdx + WINDOW, 1);
+            r = _scanBiased(pLat, pLon, _lastIdx - BACK_WINDOW, _lastIdx + WINDOW, _lastIdx);
         } else {
             r = _scan(pLat, pLon, 0, _model.count() - 1, 4);
             if (r[0] >= 0) {
@@ -78,11 +87,48 @@ class Locator {
             _offRoute = false;
         }
 
-        _lastIdx = r[0];
         var d = _refine(pLat, pLon, r[0]);
+        if (_lastMatchD != null && d < _lastMatchD - BACK_JUMP_M) {
+            _backJumps += 1;
+            if (_backJumps < 2) {
+                return _deadReckon(info); // hold course for one tick
+            }
+        }
+        _backJumps = 0;
+        _lastIdx = r[0];
         _lastMatchD = d;
         _elapsedAtMatch = info.elapsedDistance;
         return d;
+    }
+
+    // Windowed nearest-vertex like _scan, but candidates behind the pivot
+    // must be markedly closer to win (hairpin disambiguation). The returned
+    // distSq is the raw one so the ACCEPT_SQ check stays geometric.
+    hidden function _scanBiased(pLat, pLon, lo, hi, pivot) {
+        if (lo < 0) {
+            lo = 0;
+        }
+        var n = _model.count();
+        if (hi > n - 1) {
+            hi = n - 1;
+        }
+        var best = -1;
+        var bestSq = 9.9e15;
+        var bestScore = 9.9e15;
+        var lats = _model.lat;
+        var lons = _model.lon;
+        for (var i = lo; i <= hi; i++) {
+            var dLat = pLat - lats[i];
+            var dLon = (pLon - lons[i]) * _cosLat;
+            var sq = dLat * dLat + dLon * dLon;
+            var score = i < pivot - 1 ? sq * BACK_PENALTY : sq;
+            if (score < bestScore) {
+                bestScore = score;
+                bestSq = sq;
+                best = i;
+            }
+        }
+        return [best, bestSq];
     }
 
     // Nearest vertex in [lo, hi] by squared planar distance; [idx, distSq].
