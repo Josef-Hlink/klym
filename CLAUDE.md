@@ -332,10 +332,22 @@ NOT bind both ends to the same variable, that would loop.
 ### Garmin integration (`garmin/` + `/api/garmin`)
 
 A Connect IQ **data field** for the Edge 540 ("klym on the handlebars"):
-whole-route colored-bar profile with a you-are-here marker, auto-zoom
-into the current detected climb. Personal/sideloaded, Monkey C, built
-with a Makefile in `garmin/` (SDK is a manual SDK Manager install; the
-devShell supplies the JDK — see `garmin/README.md`).
+whole-route profile with a you-are-here marker, auto-switching to a
+ClimbPro-style view inside a detected climb — a **±1 km window sliding
+with the rider**, drawn as a silhouette of the DP-simplified profile
+(`garmin/source/Sections.mc`, the device sibling of
+`computeAdaptiveBins`; the silhouette renders the section *chords*, so
+it's inherently smoothed) colored by klym's grade bands with % labels,
+plus the whole climb as a 500 m colored-bar strip bracketing the
+on-screen slice. Rider = ring dot on the silhouette surface. Route
+sections are cached once per load, climb sections once per climb entry.
+Personal/sideloaded, Monkey C, built with a Makefile in `garmin/` (SDK
+is a manual SDK Manager install; the devShell supplies the JDK — see
+`garmin/README.md`). Two sim-only dev aids: `make sim-config DEMO=true`
+bakes a self-riding mode (rides the loaded route when there's no GPS
+fix), and `garmin/preview/preview.html` is a JS/canvas port of the
+renderer for browser-side design iteration — **keep it in sync with
+Renderer.mc by hand**.
 
 Web side: `buildGarminPayload` (`src/lib/garmin.ts`, pure + tested)
 resamples a route onto one fixed step (≤ ~1200 samples) and emits

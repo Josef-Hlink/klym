@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>klym Edge 540 renderer preview</title>
+<style>
+  body { background: #1a1a1a; font-family: -apple-system, sans-serif; margin: 16px; }
+  .grid { display: flex; flex-wrap: wrap; gap: 12px; }
+  .frame { text-align: center; }
+  .frame span { color: #999; font-size: 11px; display: block; margin-top: 4px; }
+  canvas { border: 1px solid #444; image-rendering: pixelated; width: 246px; height: 322px; }
+</style>
+</head>
+<body>
+<div class="grid" id="grid"></div>
+<script src="payload.js"></script>
+<script>
+// ============================================================
+// Faithful JS port of garmin/source/{RouteModel,Sections,Palette,Renderer}.mc
+// for headless design iteration. Keep in sync with the Monkey C.
+// ============================================================
+
+const W = 246, H = 322;
+
+// ---- Garmin font approximations (Edge 540) ----
+const FONTS = {
+  XTINY:  { h: 15, px: 12 },
+  TINY:   { h: 19, px: 15 },
+  SMALL:  { h: 22, px: 17 },
+  MEDIUM: { h: 29, px: 23 },
+};
+
+// ---- RouteModel ----
+class RouteModel {
+  constructor(p) {
+    this.name = p.name; this.stepM = p.step; this.distM = p.dist;
+    this.e = p.e; this.lat = p.lat; this.lon = p.lon; this.climbs = p.c;
+  }
+  count() { return this.e.length; }
+  distOfIdx(i) { const d = i * this.stepM; return d < this.distM ? d : this.distM; }
+  idxOfDist(d) {
+    let i = Math.trunc(d / this.stepM + 0.5);
+    if (i < 0) i = 0;
+    if (i >= this.e.length) i = this.e.length - 1;
+    return i;
+  }
+  eleMAt(d) {
+    const f = d / this.stepM; let i = Math.trunc(f);
+    if (i < 0) i = 0;
+    if (i >= this.e.length - 1) return this.e[this.e.length - 1] / 10;
+    const t = f - i;
+    return (this.e[i] * (1 - t) + this.e[i + 1] * t) / 10;
+  }
+  gradePct(i0, i1) {
+    if (i1 <= i0) return 0;
+    const dd = this.distOfIdx(i1) - this.distOfIdx(i0);
+    if (dd <= 0) return 0;
+    return (this.e[i1] - this.e[i0]) * 10 / dd;
+  }
+}
+
+// ---- Sections ----
+const EPS_CLIMB_DM = 40, EPS_ROUTE_DM = 150;
+function computeSections(model, i0, i1, epsilonDm) {
+  if (i1 - i0 < 1) return [];
+  const e = model.e, isBreak = {};
+  const stack = [[i0, i1]];
+  while (stack.length) {
+    const [lo, hi] = stack.pop();
+    if (hi - lo < 2) continue;
+    const run = hi - lo;
+    let maxDev = 0, maxJ = -1;
+    for (let j = lo + 1; j < hi; j++) {
+      const expect = e[lo] + (e[hi] - e[lo]) * (j - lo) / run;
+      const dev = Math.abs(e[j] - expect);
+      if (dev > maxDev) { maxDev = dev; maxJ = j; }
+    }
+    if (maxJ >= 0 && maxDev > epsilonDm) {
+      isBreak[maxJ] = true;
+      stack.push([lo, maxJ], [maxJ, hi]);
+    }
+  }
+  const out = [];
+  let a = i0;
+  for (let j = i0 + 1; j <= i1; j++) {
+    if (j === i1 || isBreak[j]) {
+      out.push([model.distOfIdx(a), model.distOfIdx(j), model.gradePct(a, j), e[a], e[j]]);
+      a = j;
+    }
+  }
+  return out;
+}
+
+// ---- Palette ----
+const DESCENT = "#64748b";
+const CUTOFFS = [0.5, 2.5, 4.5, 6.5, 8.5, 11.5];
+const BAND_COLORS = ["#eab308", "#f59e0b", "#f97316", "#ea580c", "#dc2626", "#b91c1c", "#7f1d1d"];
+function colorFor(g) {
+  if (g < 0) return DESCENT;
+  for (let i = 0; i < CUTOFFS.length; i++) if (g < CUTOFFS[i]) return BAND_COLORS[i];
+  return BAND_COLORS[BAND_COLORS.length - 1];
+}
+const CAT_LABELS = ["-", "4", "3", "2", "1", "HC"];
+const CAT_COLORS = ["#a3a3a3", "#eab308", "#f59e0b", "#ea580c", "#b91c1c", "#171717"];
+
+// ---- Dc shim ----
+class Dc {
+  constructor(ctx) { this.ctx = ctx; this.fill = "#000"; }
+  setColor(c) { this.fill = c; }
+  clear(bg) { this.ctx.fillStyle = bg; this.ctx.fillRect(0, 0, W, H); }
+  fillRectangle(x, y, w, h) { this.ctx.fillStyle = this.fill; this.ctx.fillRect(x, y, w, h); }
+  fillRoundedRectangle(x, y, w, h, r) {
+    const c = this.ctx; c.fillStyle = this.fill; c.beginPath();
+    c.roundRect(x, y, w, h, r); c.fill();
+  }
+  fillCircle(x, y, r) {
+    const c = this.ctx; c.fillStyle = this.fill; c.beginPath();
+    c.arc(x, y, r, 0, Math.PI * 2); c.fill();
+  }
+  fillPolygon(pts) {
+    const c = this.ctx; c.fillStyle = this.fill; c.beginPath();
+    c.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]);
+    c.closePath(); c.fill();
+  }
+  drawText(x, y, font, text, justify) {
+    const f = FONTS[font]; const c = this.ctx;
+    c.fillStyle = this.fill;
+    c.font = `600 ${f.px}px -apple-system, sans-serif`;
+    c.textBaseline = "top";
+    c.textAlign = justify === "C" ? "center" : justify === "R" ? "right" : "left";
+    c.fillText(text, x, y + (f.h - f.px) / 2);
+  }
+  getFontHeight(font) { return FONTS[font].h; }
+  getTextWidthInPixels(text, font) {
+    const f = FONTS[font];
+    this.ctx.font = `600 ${f.px}px -apple-system, sans-serif`;
+    return this.ctx.measureText(text).width;
+  }
+}
+
+// ---- Renderer (port of Renderer.mc) ----
+const MARGIN = 6, LABEL_MIN_PX = 24;
+class Renderer {
+  draw(dc, bg, model, d, zoomIdx, routeSections, climbSections, nextIdx) {
+    this._bg = bg;
+    const dark = bg === "#000000";
+    this._fg = dark ? "#ffffff" : "#000000";
+    this._subtle = dark ? "#aaaaaa" : "#555555";
+    this._muted = dark ? "#555555" : "#aaaaaa";
+    dc.setColor(this._fg); dc.clear(bg);
+    if (zoomIdx >= 0 && d != null && climbSections != null) {
+      this.drawZoom(dc, model, zoomIdx, d, climbSections);
+    } else {
+      this.drawRoute(dc, model, d, routeSections, nextIdx);
+    }
+  }
+
+  drawRoute(dc, model, d, sections, nextIdx) {
+    const w = W, h = H;
+    const hT = dc.getFontHeight("TINY");
+    dc.setColor(this._fg);
+    dc.drawText(MARGIN, 2, "TINY", this.fitText(dc, model.name, "TINY", w - 2 * MARGIN), "L");
+    let progress = d != null
+      ? this.fmtKm1(d) + " / " + this.fmtKm1(model.distM) + " km"
+      : this.fmtKm1(model.distM) + " km";
+    dc.setColor(this._subtle);
+    dc.drawText(MARGIN, 2 + hT, "TINY", progress, "L");
+
+    const yProf = 2 + 2 * hT + 10;
+    const hProf = h - 64 - yProf;
+    if (sections) {
+      this.drawProfile(dc, model, 0, model.distM, MARGIN, yProf, w - 2 * MARGIN, hProf, sections, d != null ? d : -1);
+    }
+    if (d != null) {
+      const mx = MARGIN + Math.trunc((w - 2 * MARGIN) * (d / model.distM));
+      this.drawRider(dc, mx, yProf, hProf, this.surfaceY(model, sections, d, 0, model.distM, yProf, hProf));
+    }
+    this.drawGradePill(dc, MARGIN, h - 56, this.currentGrade(model, d));
+    if (nextIdx >= 0 && d != null) {
+      const c = model.climbs[nextIdx];
+      const what = c[2] >= 5 ? "HC" : c[2] >= 1 ? "cat " + CAT_LABELS[c[2]] : "climb";
+      dc.setColor(this._subtle);
+      dc.drawText(w - MARGIN, h - 52, "TINY", what + " in " + this.fmtKm1(c[0] - d) + " km", "R");
+      dc.drawText(w - MARGIN, h - 52 + hT, "TINY", this.fmtKm1(c[1] - c[0]) + " km at " + (c[3] / 10).toFixed(1) + "%", "R");
+    }
+  }
+
+  drawZoom(dc, model, idx, d, sections) {
+    const w = W, h = H;
+    const hT = dc.getFontHeight("TINY");
+    const hS = dc.getFontHeight("SMALL");
+    const hM = dc.getFontHeight("MEDIUM");
+    const c = model.climbs[idx];
+
+    const label = CAT_LABELS[c[2]];
+    const bw = dc.getTextWidthInPixels(label, "SMALL") + 16;
+    dc.setColor(CAT_COLORS[c[2]]);
+    dc.fillRoundedRectangle(MARGIN, 4, bw, hS + 4, 4);
+    dc.setColor("#ffffff");
+    dc.drawText(MARGIN + bw / 2, 6, "SMALL", label, "C");
+    dc.setColor(this._subtle);
+    dc.drawText(MARGIN + bw + 8, 6, "TINY", (idx + 1) + "/" + model.climbs.length, "L");
+    dc.drawText(w - MARGIN, 6, "TINY", this.fmtKm1(c[1] - c[0]) + " km @ " + (c[3] / 10).toFixed(1) + "%", "R");
+
+    let remM = c[1] - d; if (remM < 0) remM = 0;
+    let remGain = model.e[model.idxOfDist(c[1])] / 10 - model.eleMAt(d);
+    if (remGain < 0) remGain = 0;
+    const y1 = 8 + hS;
+    dc.setColor(this._fg);
+    dc.drawText(MARGIN, y1, "MEDIUM", this.fmtKm1(remM) + " km", "L");
+    dc.drawText(w - MARGIN, y1, "MEDIUM", "+" + Math.trunc(remGain) + " m", "R");
+
+    let dStart = d - 1000, dEnd = d + 1000;
+    if (dStart < c[0]) dStart = c[0];
+    if (dEnd > c[1]) dEnd = c[1];
+    const yProf = y1 + hM + 10;
+    const hProf = h - 77 - yProf;
+    const wProf = w - 2 * MARGIN;
+    this.drawProfile(dc, model, dStart, dEnd, MARGIN, yProf, wProf, hProf, sections, d);
+
+    const span = dEnd - dStart;
+    if (span > 0) {
+      const mx = MARGIN + Math.trunc(wProf * (d - dStart) / span);
+      this.drawRider(dc, mx, yProf, hProf, this.surfaceY(model, sections, d, dStart, dEnd, yProf, hProf));
+    }
+
+    // Position track: the whole climb as klym's classic 500 m colored-bar
+    // strip, the on-screen window bracketed in fg.
+    const climbLen = c[1] - c[0];
+    const ty = yProf + hProf + 8;
+    const th = 6;
+    if (climbLen > 0) {
+      const BUCKET = 500;
+      for (let b0 = c[0]; b0 < c[1]; b0 += BUCKET) {
+        const b1 = Math.min(b0 + BUCKET, c[1]);
+        if (b1 - b0 < 50) break;
+        const g = (model.eleMAt(b1) - model.eleMAt(b0)) / (b1 - b0) * 100;
+        const xs = Math.trunc(wProf * (b0 - c[0]) / climbLen);
+        const xe = Math.trunc(wProf * (b1 - c[0]) / climbLen) - 1;
+        if (xe <= xs) continue;
+        dc.setColor(colorFor(g));
+        dc.fillRectangle(MARGIN + xs, ty, xe - xs, th);
+      }
+      let wx0 = Math.trunc(wProf * (dStart - c[0]) / climbLen);
+      let wx1 = Math.trunc(wProf * (dEnd - c[0]) / climbLen);
+      if (wx1 - wx0 < 6) wx1 = wx0 + 6;
+      dc.setColor(this._fg);
+      dc.fillRectangle(MARGIN + wx0, ty - 3, wx1 - wx0, 2);
+      dc.fillRectangle(MARGIN + wx0, ty + th + 1, wx1 - wx0, 2);
+      dc.fillRectangle(MARGIN + wx0, ty - 3, 2, th + 6);
+      dc.fillRectangle(MARGIN + wx1 - 2, ty - 3, 2, th + 6);
+    }
+
+    this.drawGradePill(dc, MARGIN, h - 56, this.currentGrade(model, d));
+    dc.setColor(this._subtle);
+    dc.drawText(w - MARGIN, h - 52 + hT / 2, "TINY",
+      "avg left " + model.gradePct(model.idxOfDist(d), model.idxOfDist(c[1])).toFixed(1) + "%", "R");
+  }
+
+  // y of the silhouette surface at distance d (same scaling as drawProfile).
+  surfaceY(model, sections, d, dStart, dEnd, yProf, hProf) {
+    let lo = 9.9e15, hi = -9.9e15;
+    for (const s of sections) {
+      const vs = Math.max(s[0], dStart), ve = Math.min(s[1], dEnd);
+      if (ve <= vs) continue;
+      const eA = this.chordEleDm(s, vs), eB = this.chordEleDm(s, ve);
+      lo = Math.min(lo, eA, eB); hi = Math.max(hi, eA, eB);
+    }
+    let range = hi - lo;
+    if (range < 20) range = 20;
+    let si = 0;
+    while (si < sections.length - 1 && d >= sections[si][1]) si++;
+    let ch = Math.trunc(hProf * (this.chordEleDm(sections[si], d) - lo) / range);
+    if (ch < 1) ch = 1; if (ch > hProf) ch = hProf;
+    return yProf + hProf - ch;
+  }
+
+  // Thin stem from the top of the profile area down to a ring dot sitting
+  // on the silhouette surface.
+  drawRider(dc, mx, yProf, hProf, sy) {
+    dc.setColor(this._fg);
+    dc.fillRectangle(mx, yProf - 2, 2, sy - yProf - 2);
+    dc.fillPolygon([[mx - 4, yProf - 8], [mx + 6, yProf - 8], [mx + 1, yProf - 1]]);
+    dc.fillCircle(mx + 1, sy, 5);
+    dc.setColor(this._bg);
+    dc.fillCircle(mx + 1, sy, 2);
+  }
+
+  chordEleDm(s, d) {
+    const run = s[1] - s[0];
+    if (run <= 0) return s[3];
+    let t = (d - s[0]) / run;
+    if (t < 0) t = 0; if (t > 1) t = 1;
+    return s[3] + (s[4] - s[3]) * t;
+  }
+
+  drawProfile(dc, model, dStart, dEnd, x, y, w, h, sections, riddenUntilD) {
+    const span = dEnd - dStart;
+    if (span <= 0 || w < 4 || h < 8 || sections.length === 0) return;
+
+    let lo = 9.9e15, hi = -9.9e15;
+    for (const s of sections) {
+      const vs = Math.max(s[0], dStart), ve = Math.min(s[1], dEnd);
+      if (ve <= vs) continue;
+      const eA = this.chordEleDm(s, vs), eB = this.chordEleDm(s, ve);
+      lo = Math.min(lo, eA, eB); hi = Math.max(hi, eA, eB);
+    }
+    let range = hi - lo;
+    if (range < 20) range = 20;
+
+    let si = 0;
+    for (let px = 0; px < w; px++) {
+      const dist = dStart + span * px / w;
+      while (si < sections.length - 1 && dist >= sections[si][1]) si++;
+      let ch = Math.trunc(h * (this.chordEleDm(sections[si], dist) - lo) / range);
+      if (ch < 1) ch = 1; if (ch > h) ch = h;
+      dc.setColor(riddenUntilD >= 0 && dist < riddenUntilD ? this._muted : colorFor(sections[si][2]));
+      dc.fillRectangle(x + px, y + h - ch, 1, ch);
+    }
+
+    const fontH = dc.getFontHeight("XTINY");
+    for (const s of sections) {
+      const vs = Math.max(s[0], dStart), ve = Math.min(s[1], dEnd);
+      if (ve <= vs) continue;
+      const midD = (vs + ve) / 2;
+      if (riddenUntilD >= 0 && midD < riddenUntilD) continue;
+      const pxw = Math.trunc((ve - vs) / span * w);
+      if (pxw < LABEL_MIN_PX) continue;
+      const g = s[2];
+      const text = Math.trunc(g + (g >= 0 ? 0.5 : -0.5)) + "%";
+      const mx = x + Math.trunc((midD - dStart) / span * w);
+      const colH = Math.trunc(h * (this.chordEleDm(s, midD) - lo) / range);
+      if (colH >= fontH + 6) {
+        dc.setColor("#ffffff");
+        dc.drawText(mx, y + h - Math.trunc((colH + fontH) / 2), "XTINY", text, "C");
+      } else {
+        dc.setColor(this._subtle);
+        dc.drawText(mx, y + h - colH - fontH - 1, "XTINY", text, "C");
+      }
+    }
+  }
+
+  drawGradePill(dc, x, y, grade) {
+    const hM = dc.getFontHeight("MEDIUM");
+    const text = (grade >= 0 ? "+" : "") + grade.toFixed(1) + "%";
+    const tw = dc.getTextWidthInPixels(text, "MEDIUM");
+    dc.setColor(colorFor(grade));
+    dc.fillRoundedRectangle(x, y, tw + 20, hM + 8, 6);
+    dc.setColor("#ffffff");
+    dc.drawText(x + (tw + 20) / 2, y + 4, "MEDIUM", text, "C");
+  }
+
+  currentGrade(model, d) {
+    if (d == null) return 0;
+    const i = model.idxOfDist(d);
+    const i0 = i > 0 ? i - 1 : 0;
+    const i1 = i < model.count() - 1 ? i + 1 : model.count() - 1;
+    return model.gradePct(i0, i1);
+  }
+
+  fmtKm1(m) { return (m / 1000).toFixed(1); }
+
+  fitText(dc, text, font, maxW) {
+    if (dc.getTextWidthInPixels(text, font) <= maxW) return text;
+    let t = text;
+    while (t.length > 1 && dc.getTextWidthInPixels(t + "...", font) > maxW) t = t.slice(0, -1);
+    return t + "...";
+  }
+}
+
+// ---- Frame grid ----
+const model = new RouteModel(PAYLOAD);
+const routeSections = computeSections(model, 0, model.count() - 1, EPS_ROUTE_DM);
+console.log("route sections:", routeSections.length, "climbs:", model.climbs.length);
+
+function nextClimbIdx(d) {
+  for (let i = 0; i < model.climbs.length; i++) if (model.climbs[i][0] > d) return i;
+  return -1;
+}
+function climbIdxAt(d) {
+  for (let i = 0; i < model.climbs.length; i++)
+    if (d >= model.climbs[i][0] && d < model.climbs[i][1]) return i;
+  return -1;
+}
+const sectionCache = {};
+function sectionsFor(idx) {
+  if (!(idx in sectionCache)) {
+    const c = model.climbs[idx];
+    sectionCache[idx] = computeSections(model, model.idxOfDist(c[0]), model.idxOfDist(c[1]), EPS_CLIMB_DM);
+  }
+  return sectionCache[idx];
+}
+
+const frames = [
+  { d: 60000,  zoom: false, label: "route @ 60 km" },
+  { d: 114300, zoom: false, label: "route, HC in 0.7 km" },
+  { d: 2500,   zoom: true,  label: "zoom: climb 1 (cat 2)" },
+  { d: 22000,  zoom: true,  label: "zoom: climb 3 of 10" },
+  { d: 60000,  zoom: true,  label: "zoom: short climb (1.1 km)" },
+  { d: 115400, zoom: true,  label: "zoom: AdH foot" },
+  { d: 121600, zoom: true,  label: "zoom: AdH mid" },
+  { d: 128400, zoom: true,  label: "zoom: AdH near summit" },
+  { d: 121600, zoom: true,  label: "zoom: night mode", bg: "#000000" },
+];
+
+const grid = document.getElementById("grid");
+for (const f of frames) {
+  const div = document.createElement("div");
+  div.className = "frame";
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  div.appendChild(cv);
+  const span = document.createElement("span");
+  span.textContent = f.label;
+  div.appendChild(span);
+  grid.appendChild(div);
+  const dc = new Dc(cv.getContext("2d"));
+  const r = new Renderer();
+  const zi = f.zoom ? climbIdxAt(f.d) : -1;
+  r.draw(dc, f.bg || "#ffffff", model, f.d, zi, routeSections, zi >= 0 ? sectionsFor(zi) : null, nextClimbIdx(f.d));
+}
+</script>
+</body>
+</html>

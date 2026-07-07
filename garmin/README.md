@@ -2,9 +2,13 @@
 
 "klym on the handlebars": an Edge 540 data field that fetches the route you
 sent from the klym web UI (`Send to Garmin` on a route page) and draws the
-klym colored-bar profile with a you-are-here marker. Inside a detected climb
-it zooms to that climb: category badge, remaining distance/gain, current and
-remaining average grade. Personal, sideloaded — not on the Connect IQ store.
+whole-route klym profile — a silhouette of the adaptively simplified
+elevation in klym's grade colors — with a you-are-here marker. Inside a
+detected climb it switches to a ClimbPro-style view: a ±1 km window sliding
+with the rider, adaptive constant-grade sections with % labels, remaining
+distance/gain, current grade, and the whole climb as a slim 500 m
+colored-bar strip that brackets the on-screen slice. Personal, sideloaded —
+not on the Connect IQ store.
 
 How it talks to klym: `GET $BASE_URL/api/garmin/current?token=…` through the
 paired phone (Garmin Connect Mobile). The web side is in
@@ -39,8 +43,15 @@ paired phone (Garmin Connect Mobile). The web side is in
   - Simulate a ride: *Simulation → Activity Data…* and play back a GPX/FIT
     (stage 19, `src/lib/server/tdf-2026/stage-19.gpx`, ends up Alpe d'Huez;
     convert with `gpsbabel` if your SDK's playback only takes FIT).
+  - Or skip playback entirely: `make sim-config DEMO=true build`, then push —
+    with no GPS fix the field rides the loaded route by itself (30 m/s from
+    just before the first climb). A real fix always takes over; device
+    builds hardcode the flag off.
   - Watch memory: *File → View Memory* — the data field budget on the
-    Edge 540 is ~124.7 KB.
+    Edge 540 is ~124.7 KB. Every successful route load also prints
+    `klym mem: used/total` to the monkeydo console.
+  - Design without the simulator: `preview/` holds an HTML/canvas port of
+    the renderer (see `preview/README.md`).
 - `make config build` — device build against `https://klym.hlink.dev` with
   `secrets.token`.
 - `make sideload` — device build + copy `bin/klym.prg` to the Edge's
