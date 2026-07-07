@@ -211,10 +211,21 @@ class Renderer {
     dc.drawText(MARGIN, y1, "MEDIUM", this.fmtKm1(remM) + " km", "L");
     dc.drawText(w - MARGIN, y1, "MEDIUM", "+" + Math.trunc(remGain) + " m", "R");
 
-    let dStart = d - 1000, dEnd = d + 1000;
+    // Distance left in the current section, under the remaining km.
+    let sci = 0;
+    while (sci < sections.length - 1 && d >= sections[sci][1]) sci++;
+    let secRem = sections[sci][1] - d;
+    if (secRem < 0) secRem = 0;
+    const y2 = y1 + hM;
+    dc.setColor(this._subtle);
+    dc.drawText(MARGIN, y2, "TINY", this.fmtShortDist(secRem), "L");
+
+    // Sliding 2 km window with the rider at 20% — the road ahead is what
+    // matters, the ridden gray tail is just context.
+    let dStart = d - 400, dEnd = d + 1600;
     if (dStart < c[0]) dStart = c[0];
     if (dEnd > c[1]) dEnd = c[1];
-    const yProf = y1 + hM + 10;
+    const yProf = y2 + hT + 6;
     const hProf = h - 77 - yProf;
     const wProf = w - 2 * MARGIN;
     this.drawProfile(dc, model, dStart, dEnd, MARGIN, yProf, wProf, hProf, sections, d);
@@ -364,6 +375,12 @@ class Renderer {
   }
 
   fmtKm1(m) { return (m / 1000).toFixed(1); }
+
+  // "340 m" below 1 km (rounded to 10 m), "1.4 km" above.
+  fmtShortDist(m) {
+    if (m < 995) return (Math.trunc(m / 10 + 0.5) * 10) + " m";
+    return this.fmtKm1(m) + " km";
+  }
 
   fitText(dc, text, font, maxW) {
     if (dc.getTextWidthInPixels(text, font) <= maxW) return text;

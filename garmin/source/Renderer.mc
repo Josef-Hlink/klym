@@ -6,8 +6,9 @@ import Toybox.Lang;
 // it. Profiles are drawn ClimbPro-style: a filled silhouette of the
 // simplified profile (the section chords from Sections.mc), colored by
 // klym's grade bands with % labels where a block is wide enough. The
-// climb view is a ±1 km sliding window around the rider, with a slim
-// position track showing which slice of the whole climb is on screen.
+// climb view is a 2 km sliding window with the rider at 20% (400 m
+// behind, 1.6 km ahead), with a slim position track showing which slice
+// of the whole climb is on screen.
 class Renderer {
     const MARGIN = 6;
     const LABEL_MIN_PX = 24;
@@ -163,16 +164,32 @@ class Renderer {
         dc.drawText(w - MARGIN, y1, Graphics.FONT_MEDIUM,
             "+" + remGain.toNumber().toString() + " m", Graphics.TEXT_JUSTIFY_RIGHT);
 
-        // Sliding window: +-1 km around the rider, clamped to the climb.
-        var dStart = d.toFloat() - 1000;
-        var dEnd = d.toFloat() + 1000;
+        // Distance left in the current section, under the remaining km.
+        var si = 0;
+        while (si < sections.size() - 1 && d >= sections[si][1]) {
+            si++;
+        }
+        var secRem = sections[si][1] - d;
+        if (secRem < 0) {
+            secRem = 0.0;
+        }
+        var y2 = y1 + hM;
+        dc.setColor(_subtle, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(MARGIN, y2, Graphics.FONT_TINY, fmtShortDist(secRem),
+            Graphics.TEXT_JUSTIFY_LEFT);
+
+        // Sliding 2 km window with the rider at 20% — the road ahead is
+        // what matters, the ridden gray tail is just context. Clamped to
+        // the climb.
+        var dStart = d.toFloat() - 400;
+        var dEnd = d.toFloat() + 1600;
         if (dStart < c[0]) {
             dStart = c[0].toFloat();
         }
         if (dEnd > c[1]) {
             dEnd = c[1].toFloat();
         }
-        var yProf = y1 + hM + 10;
+        var yProf = y2 + hT + 6;
         var hProf = h - 77 - yProf; // leave room for the position track
         var wProf = w - 2 * MARGIN;
         drawProfile(dc, model, dStart, dEnd, MARGIN, yProf, wProf, hProf,
@@ -430,6 +447,14 @@ class Renderer {
 
     hidden function fmtKm1(m) {
         return (m / 1000.0).format("%.1f");
+    }
+
+    // "340 m" below 1 km (rounded to 10 m), "1.4 km" above.
+    hidden function fmtShortDist(m) {
+        if (m < 995) {
+            return ((m / 10.0 + 0.5).toNumber() * 10).toString() + " m";
+        }
+        return fmtKm1(m) + " km";
     }
 
     hidden function fitText(dc, text, font, maxW) {

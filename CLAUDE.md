@@ -333,8 +333,9 @@ NOT bind both ends to the same variable, that would loop.
 
 A Connect IQ **data field** for the Edge 540 ("klym on the handlebars"):
 whole-route profile with a you-are-here marker, auto-switching to a
-ClimbPro-style view inside a detected climb — a **±1 km window sliding
-with the rider**, drawn as a silhouette of the DP-simplified profile
+ClimbPro-style view inside a detected climb — a **2 km window sliding
+with the rider at 20%** (400 m behind, 1.6 km ahead), drawn as a
+silhouette of the DP-simplified profile
 (`garmin/source/Sections.mc`, the device sibling of
 `computeAdaptiveBins`; the silhouette renders the section *chords*, so
 it's inherently smoothed) colored by klym's grade bands with % labels,

@@ -4,10 +4,11 @@
 sent from the klym web UI (`Send to Garmin` on a route page) and draws the
 whole-route klym profile — a silhouette of the adaptively simplified
 elevation in klym's grade colors — with a you-are-here marker. Inside a
-detected climb it switches to a ClimbPro-style view: a ±1 km window sliding
-with the rider, adaptive constant-grade sections with % labels, remaining
-distance/gain, current grade, and the whole climb as a slim 500 m
-colored-bar strip that brackets the on-screen slice. Personal, sideloaded —
+detected climb it switches to a ClimbPro-style view: a 2 km window sliding
+with the rider at 20% (400 m behind, 1.6 km ahead), adaptive constant-grade
+sections with % labels, remaining distance/gain (whole climb and current
+section), current grade, and the whole climb as a slim 500 m colored-bar
+strip that brackets the on-screen slice. Personal, sideloaded —
 not on the Connect IQ store.
 
 How it talks to klym: `GET $BASE_URL/api/garmin/current?token=…` through the
