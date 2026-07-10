@@ -3,6 +3,7 @@
 	import maplibregl, { type Map as MLMap, type MapMouseEvent, type Marker } from 'maplibre-gl';
 	import 'maplibre-gl/dist/maplibre-gl.css';
 	import { findPointAtDistance } from '$lib/elevation.js';
+	import { loadBasemap } from '$lib/basemap.js';
 	import type { RouteBounds, RoutePoint } from '$lib/types.js';
 
 	type Props = {
@@ -30,6 +31,30 @@
 	let markerAEl: Marker | null = null;
 	let markerBEl: Marker | null = null;
 	let ready = $state(false);
+	// Bumped on every style.load so source-writing effects (the crop line)
+	// re-run against the freshly recreated sources after a basemap switch.
+	let styleGen = $state(0);
+
+	type Basemap = 'osm' | 'proto';
+	let basemap = $state<Basemap>('osm');
+
+	const BASEMAPS: { id: Basemap; label: string }[] = [
+		{ id: 'osm', label: 'OSM' },
+		{ id: 'proto', label: 'Vector' }
+	];
+
+	async function setBasemap(b: Basemap) {
+		if (b === basemap || !map) return;
+		basemap = b;
+		if (b === 'osm') {
+			map.setStyle(OSM_STYLE);
+			return;
+		}
+		const { style } = await loadBasemap();
+		// The user may have toggled back (or the component unmounted) while
+		// the dynamic import was in flight.
+		if (map && basemap === 'proto') map.setStyle(style);
+	}
 
 	const OSM_STYLE: maplibregl.StyleSpecification = {
 		version: 8,
@@ -118,7 +143,10 @@
 		map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
 		map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left');
 
-		map.on('load', () => {
+		// Sources and layers belong to the style, so map.setStyle() (basemap
+		// switch) wipes them. style.load fires for the initial style and after
+		// every swap — re-add them there.
+		map.on('style.load', () => {
 			if (!map) return;
 			const coords = points.map((p) => [p.lon, p.lat]);
 
@@ -161,36 +189,40 @@
 				paint: { 'line-color': '#b91c1c', 'line-width': 5 }
 			});
 
-			const start = points[0];
-			const end = points[points.length - 1];
-			new maplibregl.Marker({ color: '#16a34a' })
-				.setLngLat([start.lon, start.lat])
-				.addTo(map);
-			new maplibregl.Marker({ color: '#dc2626' })
-				.setLngLat([end.lon, end.lat])
-				.addTo(map);
-
-			// Hovering near the track mirrors the position onto the elevation
-			// chart (the same two-way hoverDistM binding the chart feeds us).
-			// Deliberately not a track-layer event: snapping within SNAP_PX
-			// beats having to hit the 7px line pixel-perfectly.
-			map.on('mousemove', (e) => {
-				const distM = snapToTrack(e);
-				hoverDistM = distM;
-				if (map) map.getCanvas().style.cursor = distM != null ? 'crosshair' : '';
-			});
-			map.on('mouseout', () => {
-				hoverDistM = null;
-			});
-			// Drop a pin anywhere near the route: the marker snaps to the
-			// nearest track point when the click lands within SNAP_PX of it.
-			map.on('click', (e) => {
-				if (!onPlaceMarker) return;
-				const distM = snapToTrack(e);
-				if (distM != null) onPlaceMarker(distM);
-			});
-
 			ready = true;
+			styleGen += 1;
+		});
+
+		// DOM markers and map-level event handlers survive setStyle(), so they
+		// are registered exactly once here — not in the style.load handler,
+		// where they'd duplicate on every basemap switch.
+		const start = points[0];
+		const end = points[points.length - 1];
+		new maplibregl.Marker({ color: '#16a34a' })
+			.setLngLat([start.lon, start.lat])
+			.addTo(map);
+		new maplibregl.Marker({ color: '#dc2626' })
+			.setLngLat([end.lon, end.lat])
+			.addTo(map);
+
+		// Hovering near the track mirrors the position onto the elevation
+		// chart (the same two-way hoverDistM binding the chart feeds us).
+		// Deliberately not a track-layer event: snapping within SNAP_PX
+		// beats having to hit the 7px line pixel-perfectly.
+		map.on('mousemove', (e) => {
+			const distM = snapToTrack(e);
+			hoverDistM = distM;
+			if (map) map.getCanvas().style.cursor = distM != null ? 'crosshair' : '';
+		});
+		map.on('mouseout', () => {
+			hoverDistM = null;
+		});
+		// Drop a pin anywhere near the route: the marker snaps to the
+		// nearest track point when the click lands within SNAP_PX of it.
+		map.on('click', (e) => {
+			if (!onPlaceMarker) return;
+			const distM = snapToTrack(e);
+			if (distM != null) onPlaceMarker(distM);
 		});
 	});
 
@@ -256,6 +288,7 @@
 
 	$effect(() => {
 		if (!ready || !map) return;
+		void styleGen; // re-seed the recreated source after a basemap switch
 		const src = map.getSource('track-crop') as maplibregl.GeoJSONSource | undefined;
 		if (!src) return;
 		if (markerA == null || markerB == null) {
@@ -276,4 +309,21 @@
 	});
 </script>
 
-<div bind:this={container} class="h-[480px] w-full overflow-hidden rounded-lg border border-neutral-200"></div>
+<div class="relative">
+	<div bind:this={container} class="h-[480px] w-full overflow-hidden rounded-lg border border-neutral-200"></div>
+	<div class="absolute top-2 right-2 z-10 flex items-center gap-0.5 rounded-md bg-white/90 px-1 py-0.5 shadow-sm">
+		{#each BASEMAPS as { id, label } (id)}
+			<button
+				type="button"
+				onclick={() => setBasemap(id)}
+				class="rounded px-2 py-1 text-xs font-medium hover:bg-neutral-100 {basemap === id
+					? 'text-neutral-800'
+					: 'text-neutral-400'}"
+				aria-pressed={basemap === id}
+				title="{label} basemap"
+			>
+				{label}
+			</button>
+		{/each}
+	</div>
+</div>

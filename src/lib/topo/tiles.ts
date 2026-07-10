@@ -21,33 +21,49 @@ export const TILE_FADE_END = Math.PI / 2 - 0.05;
 // this far below the OSM ground at the same lat/lon corners.
 export const BLOCK_DEPTH_M = 100;
 
-export type MapSource = 'osm' | 'topo' | 'sat';
+export type MapSource = 'osm' | 'topo' | 'sat' | 'proto';
 
-export type TileSource = {
+// Raster sources are slippy-tile URL templates composited by buildTileImage;
+// the vector source is the self-hosted Protomaps basemap, rasterized via an
+// off-screen MapLibre snapshot (see vectorTile.ts) — no URL template.
+export type RasterTileSource = {
+	kind: 'raster';
 	url: string;
 	subdomains: string[] | null;
 	maxZoom: number;
 	label: string;
 };
+export type VectorTileSource = {
+	kind: 'vector';
+	label: string;
+};
+export type TileSource = RasterTileSource | VectorTileSource;
 
 export const TILE_SOURCES: Record<MapSource, TileSource> = {
 	osm: {
+		kind: 'raster',
 		url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
 		subdomains: null,
 		maxZoom: 19,
 		label: 'Default'
 	},
 	topo: {
+		kind: 'raster',
 		url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
 		subdomains: ['a', 'b', 'c'],
 		maxZoom: 17,
 		label: 'Topographical'
 	},
 	sat: {
+		kind: 'raster',
 		url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
 		subdomains: null,
 		maxZoom: 19,
 		label: 'Satellite'
+	},
+	proto: {
+		kind: 'vector',
+		label: 'Vector'
 	}
 };
 
@@ -137,6 +153,46 @@ export function computePaddedTileBBox(
 		maxLat: maxLat + latPad,
 		minLon: minLon - lonPad,
 		maxLon: maxLon + lonPad
+	};
+}
+
+// Long-axis pixel cap for the vector-ground snapshot. Comparable to the
+// raster path's ceiling (TILE_MAX_TILES_PER_AXIS × TILE_SIZE = 2560).
+export const SNAPSHOT_MAX_PX = 2048;
+
+// Canvas dims (CSS px) whose aspect equals the bbox's Web-Mercator aspect —
+// the same projection the slippy composite is cropped in, so a snapshot at
+// these dims drops into buildTileTransform like a raster composite does.
+// Mercator aspect is zoom-independent; computed with the z0 tile math.
+// Integer rounding of the short axis costs at most sub-pixel misregistration.
+export function snapshotDims(
+	bbox: TileBBox,
+	maxPx = SNAPSHOT_MAX_PX
+): { width: number; height: number } | null {
+	const dx = lonToTileX(bbox.maxLon, 0) - lonToTileX(bbox.minLon, 0);
+	const dy = latToTileY(bbox.minLat, 0) - latToTileY(bbox.maxLat, 0);
+	if (!(dx > 0) || !(dy > 0)) return null;
+	const aspect = dx / dy;
+	return aspect >= 1
+		? { width: maxPx, height: Math.max(1, Math.round(maxPx / aspect)) }
+		: { width: Math.max(1, Math.round(maxPx * aspect)), height: maxPx };
+}
+
+// Camera that renders exactly `bbox` into a canvas `widthPx` wide (MapLibre's
+// world is 512 × 2^zoom px). Center is the Mercator midpoint, NOT the lat
+// midpoint — Mercator stretches with latitude. Explicit camera math instead
+// of fitBounds: deterministic, and no padding/rounding surprises.
+export function snapshotCamera(
+	bbox: TileBBox,
+	widthPx: number
+): { center: [number, number]; zoom: number } {
+	const x0 = lonToTileX(bbox.minLon, 0);
+	const x1 = lonToTileX(bbox.maxLon, 0);
+	const y0 = latToTileY(bbox.maxLat, 0);
+	const y1 = latToTileY(bbox.minLat, 0);
+	return {
+		center: [tileXToLon((x0 + x1) / 2, 0), tileYToLat((y0 + y1) / 2, 0)],
+		zoom: Math.log2(widthPx / (512 * (x1 - x0)))
 	};
 }
 

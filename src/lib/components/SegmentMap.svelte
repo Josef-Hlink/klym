@@ -33,6 +33,7 @@
 		type MapSource,
 		type TileImage
 	} from '$lib/topo/tiles.js';
+	import { buildVectorTileImage } from '$lib/topo/vectorTile.js';
 	import {
 		applyZoomAtCursor,
 		clampViewport,
@@ -145,7 +146,7 @@
 	let showAnchorLines = $state(true);
 	let showAllDrapes = $state(false);
 	let mapSource = $state<MapSource>('osm');
-	const SOURCES: MapSource[] = ['osm', 'topo', 'sat'];
+	const SOURCES: MapSource[] = ['osm', 'topo', 'sat', 'proto'];
 
 	let showMapMenu = $state(false);
 	let mapMenuHideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -245,9 +246,12 @@
 			return;
 		}
 		const source = TILE_SOURCES[mapSource];
-		const zoom = pickTileZoom(padded, source.maxZoom);
 		let cancelled = false;
-		buildTileImage(padded, zoom, source.url, source.subdomains)
+		const build =
+			source.kind === 'vector'
+				? buildVectorTileImage(padded)
+				: buildTileImage(padded, pickTileZoom(padded, source.maxZoom), source.url, source.subdomains);
+		build
 			.then((result) => {
 				if (cancelled) return;
 				tileImage = result;
@@ -728,7 +732,7 @@
 				<path d="M 8 3 Q 8 7 12 10 Q 16.5 13 21 16" />
 				<path d="M 4 4 Q 2 8 7 10 Q 9 12 11 14 Q 15 16 17 18 Q 19 19 21 20" />
 				<path d="M 3 13 Q 3 15 4 16 Q 6 17 8 18 Q 11 19 14 20" />
-			{:else}
+			{:else if source === 'sat'}
 				<g transform="rotate(-45 8 8)">
 					<rect x="2" y="7" width="6" height="6" rx="1.5" />
 					<rect x="8" y="4" width="4" height="12" rx="1" />
@@ -737,6 +741,12 @@
 				<path d="M 17 12 a 3 3 0 0 1 -3 3" />
 				<path d="M 20 12 a 6 6 0 0 1 -6 6" />
 				<path d="M 23 12 a 9 9 0 0 1 -9 9" />
+			{:else}
+				<path d="M 5 6 L 19 4 L 20 18 L 6 20 Z" />
+				<circle cx="5" cy="6" r="1.6" fill="currentColor" stroke="none" />
+				<circle cx="19" cy="4" r="1.6" fill="currentColor" stroke="none" />
+				<circle cx="20" cy="18" r="1.6" fill="currentColor" stroke="none" />
+				<circle cx="6" cy="20" r="1.6" fill="currentColor" stroke="none" />
 			{/if}
 		</svg>
 	{/snippet}

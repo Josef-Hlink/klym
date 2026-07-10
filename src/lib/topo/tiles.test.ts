@@ -5,9 +5,12 @@ import {
 	latToTileY,
 	lonToTileX,
 	pickTileZoom,
+	snapshotCamera,
+	snapshotDims,
 	tileFadeOpacity,
 	tileXToLon,
 	tileYToLat,
+	SNAPSHOT_MAX_PX,
 	TILE_FADE_END,
 	TILE_FADE_START,
 	TILE_MAX_TILES_PER_AXIS
@@ -110,6 +113,70 @@ describe('computePaddedTileBBox', () => {
 		// not a bigger lat span — letterbox grows the horizontal axis only.
 		expect(wide.maxLon - wide.minLon).toBeGreaterThan(tight.maxLon - tight.minLon);
 		expect(wide.maxLat - wide.minLat).toBeCloseTo(tight.maxLat - tight.minLat, 6);
+	});
+});
+
+describe('snapshotDims', () => {
+	it('returns null for degenerate bboxes', () => {
+		expect(snapshotDims({ minLat: 45, maxLat: 46, minLon: 5, maxLon: 5 })).toBeNull();
+		expect(snapshotDims({ minLat: 45, maxLat: 45, minLon: 5, maxLon: 6 })).toBeNull();
+	});
+
+	it('caps the long axis at maxPx and keeps the short axis at most maxPx', () => {
+		const wide = snapshotDims({ minLat: 45, maxLat: 45.5, minLon: 4, maxLon: 8 })!;
+		expect(wide.width).toBe(SNAPSHOT_MAX_PX);
+		expect(wide.height).toBeLessThanOrEqual(SNAPSHOT_MAX_PX);
+		const tall = snapshotDims({ minLat: 44, maxLat: 47, minLon: 5, maxLon: 5.5 })!;
+		expect(tall.height).toBe(SNAPSHOT_MAX_PX);
+		expect(tall.width).toBeLessThanOrEqual(SNAPSHOT_MAX_PX);
+	});
+
+	it('matches the Web-Mercator aspect of the bbox within rounding', () => {
+		const bbox = { minLat: 45, maxLat: 45.8, minLon: 5, maxLon: 6.4 };
+		const dims = snapshotDims(bbox)!;
+		const dx = lonToTileX(bbox.maxLon, 0) - lonToTileX(bbox.minLon, 0);
+		const dy = latToTileY(bbox.minLat, 0) - latToTileY(bbox.maxLat, 0);
+		expect(dims.width / dims.height).toBeCloseTo(dx / dy, 2);
+	});
+
+	it('uses Mercator aspect, not degree aspect: same degree spans get narrower at high latitude', () => {
+		const equator = snapshotDims({ minLat: -0.5, maxLat: 0.5, minLon: 0, maxLon: 1 })!;
+		const north = snapshotDims({ minLat: 59.5, maxLat: 60.5, minLon: 0, maxLon: 1 })!;
+		expect(north.width / north.height).toBeLessThan(equator.width / equator.height);
+	});
+});
+
+describe('snapshotCamera', () => {
+	it('renders the full world into a 512px canvas at zoom 0, centered on (0, 0)', () => {
+		const world = { minLat: -85.0511, maxLat: 85.0511, minLon: -180, maxLon: 180 };
+		const { center, zoom } = snapshotCamera(world, 512);
+		expect(zoom).toBeCloseTo(0, 6);
+		expect(center[0]).toBeCloseTo(0, 6);
+		expect(center[1]).toBeCloseTo(0, 3);
+	});
+
+	it('raises zoom by exactly 1 when the canvas width doubles', () => {
+		const bbox = { minLat: 45, maxLat: 46, minLon: 5, maxLon: 7 };
+		const z1 = snapshotCamera(bbox, 1024).zoom;
+		const z2 = snapshotCamera(bbox, 2048).zoom;
+		expect(z2 - z1).toBeCloseTo(1, 10);
+	});
+
+	it('fits the bbox exactly: mercator lon span at the chosen zoom is widthPx', () => {
+		const bbox = { minLat: 44.1, maxLat: 45.9, minLon: 5.2, maxLon: 6.7 };
+		const widthPx = 2048;
+		const { zoom } = snapshotCamera(bbox, widthPx);
+		const span = (lonToTileX(bbox.maxLon, zoom) - lonToTileX(bbox.minLon, zoom)) * 512;
+		expect(span).toBeCloseTo(widthPx, 6);
+	});
+
+	it('centers on the Mercator midpoint, not the arithmetic lat midpoint', () => {
+		const bbox = { minLat: 50, maxLat: 70, minLon: 5, maxLon: 6 };
+		const { center } = snapshotCamera(bbox, 1024);
+		const yMid = (latToTileY(bbox.maxLat, 0) + latToTileY(bbox.minLat, 0)) / 2;
+		expect(center[1]).toBeCloseTo(tileYToLat(yMid, 0), 8);
+		// Mercator stretches poleward, so the midpoint sits above 60°.
+		expect(center[1]).toBeGreaterThan(60);
 	});
 });
 
