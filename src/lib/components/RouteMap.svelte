@@ -69,6 +69,59 @@
 		layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
 	};
 
+	// Terrain trial: the AWS Open Data terrarium DEM (Mapzen/Joerd) — free, no
+	// token. If it sticks, a Europe DEM archive on tiles.hlink.dev would
+	// replace the third-party dependency.
+	const DEM_SOURCE: maplibregl.RasterDEMSourceSpecification = {
+		type: 'raster-dem',
+		tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+		encoding: 'terrarium',
+		tileSize: 256,
+		maxzoom: 13,
+		attribution: 'Terrain © <a href="https://github.com/tilezen/joerd">Mapzen</a>'
+	};
+	const TERRAIN_EXAGGERATION = 1.4;
+	const TERRAIN_PITCH = 55;
+
+	let terrainOn = $state(false);
+
+	// Terrain state and the DEM source/hillshade layer belong to the style, so
+	// they're wiped by setStyle() too — called from both the toggle and the
+	// style.load handler.
+	function applyTerrain() {
+		if (!map) return;
+		// Separate sources for terrain and hillshade (MapLibre warns that
+		// sharing one degrades hillshade quality); the browser HTTP cache
+		// dedupes the underlying tile fetches.
+		if (!map.getSource('dem')) map.addSource('dem', DEM_SOURCE);
+		if (!map.getSource('dem-hillshade')) map.addSource('dem-hillshade', DEM_SOURCE);
+		if (!map.getLayer('hillshade')) {
+			map.addLayer(
+				{
+					id: 'hillshade',
+					type: 'hillshade',
+					source: 'dem-hillshade',
+					paint: { 'hillshade-exaggeration': 0.25 }
+				},
+				'track-casing'
+			);
+		}
+		map.setTerrain({ source: 'dem', exaggeration: TERRAIN_EXAGGERATION });
+	}
+
+	function toggleTerrain() {
+		if (!map || !ready) return;
+		terrainOn = !terrainOn;
+		if (terrainOn) {
+			applyTerrain();
+			map.easeTo({ pitch: TERRAIN_PITCH, duration: 800 });
+		} else {
+			map.setTerrain(null);
+			if (map.getLayer('hillshade')) map.removeLayer('hillshade');
+			map.easeTo({ pitch: 0, bearing: 0, duration: 800 });
+		}
+	}
+
 	// Longitude deltas are scaled by cos(lat) so "nearest" matches what the
 	// eye sees on the (north-up) mercator map, not nearest in raw degrees.
 	function nearestPointDist(lng: number, lat: number): number {
@@ -191,6 +244,7 @@
 
 			ready = true;
 			styleGen += 1;
+			if (terrainOn) applyTerrain();
 		});
 
 		// DOM markers and map-level event handlers survive setStyle(), so they
@@ -325,5 +379,27 @@
 				{label}
 			</button>
 		{/each}
+		<div class="mx-0.5 h-4 w-px bg-neutral-200"></div>
+		<button
+			type="button"
+			onclick={toggleTerrain}
+			class="flex h-6 w-7 items-center justify-center rounded hover:bg-neutral-100 {terrainOn
+				? 'text-neutral-800'
+				: 'text-neutral-400'}"
+			aria-pressed={terrainOn}
+			title={terrainOn ? 'Flatten terrain' : 'Show terrain'}
+		>
+			<svg
+				viewBox="0 0 24 24"
+				class="h-4 w-4"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="1.8"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+			>
+				<path d="m8 3 4 8 5-5 5 15H2L8 3z" />
+			</svg>
+		</button>
 	</div>
 </div>
