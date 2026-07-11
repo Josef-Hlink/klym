@@ -51,9 +51,9 @@
 			return;
 		}
 		const { style } = await loadBasemap();
-		// The user may have toggled back (or the component unmounted) while
+		// The user may have switched again (or the component unmounted) while
 		// the dynamic import was in flight.
-		if (map && basemap === 'proto') map.setStyle(style);
+		if (map && basemap === b) map.setStyle(style);
 	}
 
 	const OSM_STYLE: maplibregl.StyleSpecification = {
