@@ -154,6 +154,33 @@
 	// User-resized height (px). null = use data-derived aspect.
 	let userHeight = $state<number | null>(null);
 	let wrapperWidth = $state(0);
+
+	// Cached on-screen rects for the SVG and wrapper. getBoundingClientRect
+	// forces a synchronous style/layout flush; calling it on every pointermove
+	// reflowed the entire (huge) topo DOM per event — profiled at ~19s of
+	// "Recalculate style" while map tiles were still streaming in and keeping
+	// layout dirty. The on-screen rect only changes on scroll / resize /
+	// relayout, never between two moves, so cache it and invalidate on those.
+	let cachedSvgRect: DOMRect | null = null;
+	let cachedWrapRect: DOMRect | null = null;
+	function invalidateRects() {
+		cachedSvgRect = null;
+		cachedWrapRect = null;
+	}
+	function svgRect(): DOMRect | null {
+		if (!svgEl) return null;
+		return (cachedSvgRect ??= svgEl.getBoundingClientRect());
+	}
+	function wrapRect(): DOMRect | null {
+		if (!wrapperEl) return null;
+		return (cachedWrapRect ??= wrapperEl.getBoundingClientRect());
+	}
+	// Widget resize (userHeight) and responsive width both move/resize the rect.
+	$effect(() => {
+		userHeight;
+		wrapperWidth;
+		invalidateRects();
+	});
 	const USER_HEIGHT_MIN = 240;
 	const USER_HEIGHT_MAX = 1400;
 
@@ -523,8 +550,8 @@
 	function onWheel(e: WheelEvent) {
 		if (!svgEl || !viewport) return;
 		e.preventDefault();
-		const rect = svgEl.getBoundingClientRect();
-		if (rect.width <= 0 || rect.height <= 0) return;
+		const rect = svgRect();
+		if (!rect || rect.width <= 0 || rect.height <= 0) return;
 		const relX = (e.clientX - rect.left) / rect.width;
 		const relY = (e.clientY - rect.top) / rect.height;
 		viewport = applyZoomAtCursor(viewport, dimensions, relX, relY, e.deltaY);
@@ -554,6 +581,7 @@
 		// Freeze any in-flight toggle animation so the drag takes over from the
 		// current values rather than racing rAF for pitch/yaw.
 		cancelToggleAnim();
+		invalidateRects();
 		isDragging = true;
 		dragMode = isRotateModifier(e) ? 'rotate' : 'pan';
 		dragStart = {
@@ -584,8 +612,8 @@
 			pitch = Math.max(0, Math.min(PITCH_MAX, dragStart.pitch + dy * PITCH_PER_PX));
 			return;
 		}
-		const rect = svgEl.getBoundingClientRect();
-		if (rect.width <= 0) return;
+		const rect = svgRect();
+		if (!rect || rect.width <= 0) return;
 		const dxSvg = dx * (dragStart.vp.w / rect.width);
 		const dySvg = dy * (dragStart.vp.h / rect.height);
 		const newX = dragStart.vp.x - dxSvg;
@@ -657,11 +685,11 @@
 	function onWrapperPointerMove(e: PointerEvent) {
 		if (isDragging) return;
 		if (!svgEl || !wrapperEl || !viewport || projectedPoints.length < 2) return;
-		const svgRect = svgEl.getBoundingClientRect();
-		const wrapRect = wrapperEl.getBoundingClientRect();
-		if (svgRect.width <= 0) return;
-		const relX = (e.clientX - svgRect.left) / svgRect.width;
-		const relY = (e.clientY - svgRect.top) / svgRect.height;
+		const svgR = svgRect();
+		const wrapR = wrapRect();
+		if (!svgR || !wrapR || svgR.width <= 0) return;
+		const relX = (e.clientX - svgR.left) / svgR.width;
+		const relY = (e.clientY - svgR.top) / svgR.height;
 		const svgX = viewport.x + relX * viewport.w;
 		const svgY = viewport.y + relY * viewport.h;
 
@@ -691,7 +719,7 @@
 				bestT = t;
 			}
 		}
-		const svgPerPx = viewport.w / svgRect.width;
+		const svgPerPx = viewport.w / svgR.width;
 		const thresholdSvg = HOVER_PX * svgPerPx;
 		if (bestSeg >= 0 && bestDist <= thresholdSvg) {
 			const a = slicedPoints[bestSeg];
@@ -699,8 +727,8 @@
 			const distM = a.cumDistM + bestT * (b.cumDistM - a.cumDistM);
 			hoverInfo = {
 				distM,
-				cursorX: e.clientX - wrapRect.left,
-				cursorY: e.clientY - wrapRect.top
+				cursorX: e.clientX - wrapR.left,
+				cursorY: e.clientY - wrapR.top
 			};
 		} else {
 			hoverInfo = null;
@@ -709,14 +737,23 @@
 
 	function onWrapperPointerLeave() {
 		if (!isDragging) hoverInfo = null;
+		// Re-read the rect on the next enter — layout above the widget may have
+		// shifted while the pointer was away.
+		invalidateRects();
 	}
 
 	onMount(() => {
 		wrapperEl?.addEventListener('wheel', onWheel, { passive: false });
+		// Any scroll (capture: also catches scrollable ancestors) or window
+		// resize moves the cached rect; drop it so the next read is fresh.
+		window.addEventListener('scroll', invalidateRects, { capture: true, passive: true });
+		window.addEventListener('resize', invalidateRects, { passive: true });
 	});
 
 	onDestroy(() => {
 		wrapperEl?.removeEventListener('wheel', onWheel);
+		window.removeEventListener('scroll', invalidateRects, { capture: true });
+		window.removeEventListener('resize', invalidateRects);
 		document.removeEventListener('pointermove', onDocPointerMove);
 		document.removeEventListener('pointerup', onDocPointerUp);
 		document.removeEventListener('pointermove', onResizeMove);
