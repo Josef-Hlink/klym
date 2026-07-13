@@ -11,6 +11,10 @@ declare global {
 		// interface PageState {}
 		// interface Platform {}
 	}
+
+	/** Build stamp injected by vite `define` (see vite.config.ts). */
+	const __APP_COMMIT__: string;
+	const __APP_UPDATED__: string;
 }
 
 export {};

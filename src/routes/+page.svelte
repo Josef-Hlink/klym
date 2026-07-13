@@ -491,3 +491,7 @@
 		</section>
 	{/if}
 </main>
+
+<footer class="mx-auto max-w-3xl px-6 pb-10 text-center text-[11px] text-neutral-400">
+	<span class="font-mono">{__APP_COMMIT__}</span> · updated {__APP_UPDATED__}
+</footer>

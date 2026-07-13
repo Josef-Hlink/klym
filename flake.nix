@@ -29,6 +29,12 @@
             version = "0.0.1";
             src = ./.;
 
+            # Build stamp for the footer — no .git in the sandbox, so hand the
+            # rev + commit time (unix seconds) to vite via env. shortRev/
+            # lastModified come from the flake input; a dirty tree falls back.
+            KLYM_COMMIT = self.shortRev or self.dirtyShortRev or "dev";
+            KLYM_COMMIT_TIME = builtins.toString (self.lastModified or 0);
+
             nativeBuildInputs = [
               pkgs.nodejs_24
               pkgs.pnpm_10.configHook
