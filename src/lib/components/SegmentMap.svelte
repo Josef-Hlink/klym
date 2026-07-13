@@ -3,6 +3,7 @@
 	import { findPointAtDistance, gradeColor, type ColorTheme, type GradeBin } from '$lib/elevation.js';
 	import { fmtKm, fmtM } from '$lib/format.js';
 	import {
+		ANCHOR_STEP_M,
 		buildAllDrapes,
 		buildAnchorLines,
 		buildBlockFaces,
@@ -12,6 +13,16 @@
 		buildShadowPoints,
 		buildTileTransform
 	} from '$lib/topo/geometry.js';
+	import { buildDemGrid, demEleAt, type DemGrid } from '$lib/topo/dem.js';
+	import {
+		buildClipTriangles,
+		buildTerrainBlockFaces,
+		buildTerrainMesh,
+		pointInPolygon,
+		terrainDrawOrder
+	} from '$lib/topo/terrain.js';
+	import { bakeHillshade } from '$lib/topo/hillshade.js';
+	import { computeVisibility, visibleAtDist } from '$lib/topo/visibility.js';
 	import {
 		clampDataAspect,
 		computeDimensions,
@@ -62,6 +73,10 @@
 		hoverDistM = $bindable(null),
 		externalHoverDistM = null
 	}: Props = $props();
+
+	// Unique per component instance — prefixes the terrain defs ids so two
+	// SegmentMaps on one page can't collide.
+	const uid = $props.id();
 
 	const STROKE = 6;
 	const DRAG_THRESHOLD_PX = 4;
@@ -145,6 +160,15 @@
 	let showMap = $state(true);
 	let showAnchorLines = $state(true);
 	let showAllDrapes = $state(false);
+	// Terrain ground (DEM heightfield mesh). The route floats floatM above
+	// the terrain surface so the drapes and anchor lines stay visible.
+	// 0 m is fine: the route draws on top of the mesh, so a coplanar line
+	// can't be clipped by it (that was a painter-era artifact) — it just
+	// ghosts a little sooner at grazing angles, as a ground-level line
+	// honestly should.
+	let terrainOn = $state(true);
+	let floatM = $state(10);
+	let terrainOpacity = $state(1);
 	let mapSource = $state<MapSource>('osm');
 	const SOURCES: MapSource[] = ['osm', 'topo', 'sat', 'proto'];
 
@@ -162,6 +186,23 @@
 		mapMenuHideTimer = setTimeout(() => {
 			showMapMenu = false;
 			mapMenuHideTimer = null;
+		}, 120);
+	}
+
+	let showTerrainPopover = $state(false);
+	let terrainHideTimer: ReturnType<typeof setTimeout> | null = null;
+	function openTerrainPopover() {
+		if (terrainHideTimer) {
+			clearTimeout(terrainHideTimer);
+			terrainHideTimer = null;
+		}
+		showTerrainPopover = true;
+	}
+	function closeTerrainPopover() {
+		if (terrainHideTimer) clearTimeout(terrainHideTimer);
+		terrainHideTimer = setTimeout(() => {
+			showTerrainPopover = false;
+			terrainHideTimer = null;
 		}, 120);
 	}
 
@@ -262,6 +303,101 @@
 		};
 	});
 
+	// DEM grid for the terrain ground, fetched for the same padded bbox as
+	// the ground texture so grid vertices and texture pixels share UV space.
+	// Deliberately keyed on the ORIGINAL route (slicedPoints/refFrame) and
+	// never on anything DEM-derived — substituting terrain elevations into
+	// slicedPoints itself would create a DEM → refFrame → bbox → DEM loop.
+	let demGrid = $state<DemGrid | null>(null);
+
+	$effect(() => {
+		if (!terrainOn) return; // keep the last grid; re-enabling is instant
+		const padded = computePaddedTileBBox(slicedPoints, refFrame, dataAspect);
+		if (!padded) {
+			demGrid = null;
+			return;
+		}
+		let cancelled = false;
+		buildDemGrid(padded)
+			.then((g) => {
+				if (!cancelled) demGrid = g;
+			})
+			.catch(() => {});
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	function sameBBox(a: { minLat: number; maxLat: number; minLon: number; maxLon: number },
+		b: { minLat: number; maxLat: number; minLon: number; maxLon: number }): boolean {
+		return (
+			a.minLat === b.minLat && a.maxLat === b.maxLat &&
+			a.minLon === b.minLon && a.maxLon === b.maxLon
+		);
+	}
+
+	// Terrain renders only when grid and texture agree on the bbox — during
+	// a route/bbox transition one of the two is briefly stale, and a
+	// mismatched UV mapping would smear the texture. Falls back to the flat
+	// ground until both catch up. DEM failure (buildDemGrid → null) lands
+	// here too.
+	const terrainActive = $derived(
+		terrainOn && showMap && !!demGrid && !!tileImage && sameBBox(demGrid.bbox, tileImage)
+	);
+
+	// Hillshade-baked ground texture (async, cosmetic); raw texture until
+	// the bake resolves.
+	let terrainTexture = $state<TileImage | null>(null);
+	$effect(() => {
+		terrainTexture = null;
+		if (!terrainOn || !tileImage || !demGrid || !sameBBox(demGrid.bbox, tileImage)) return;
+		let cancelled = false;
+		bakeHillshade(tileImage, demGrid).then((t) => {
+			if (!cancelled) terrainTexture = t;
+		});
+		return () => {
+			cancelled = true;
+		};
+	});
+	const groundTexture = $derived(terrainTexture ?? tileImage);
+
+	// Route points re-based onto the terrain surface + float offset. GPS
+	// elevations stay the source of truth for stats and the hover tooltip;
+	// these arrays only drive rendering. Recompute per grid/float change,
+	// not per frame.
+	const renderSliced = $derived.by(() => {
+		const g = demGrid;
+		if (!terrainActive || !g) return slicedPoints;
+		return slicedPoints.map((p) => ({ ...p, ele: demEleAt(g, p.lat, p.lon) + floatM }));
+	});
+	const renderFull = $derived.by(() => {
+		const g = demGrid;
+		if (!terrainActive || !g) return points;
+		return points.map((p) => ({ ...p, ele: demEleAt(g, p.lat, p.lon) + floatM }));
+	});
+	const groundEleAt = $derived.by(() => {
+		const g = demGrid;
+		if (!terrainActive || !g) return undefined;
+		return (lat: number, lon: number) => demEleAt(g, lat, lon);
+	});
+
+	// Static per grid: the UV-space clip triangles. Per frame: the affine
+	// transforms. Per yaw quadrant: the painter traversal order.
+	const clipTriangles = $derived(
+		terrainActive && demGrid ? buildClipTriangles(demGrid.w - 1, demGrid.h - 1) : []
+	);
+	const terrainMesh = $derived(
+		terrainActive && demGrid ? buildTerrainMesh(demGrid, project) : []
+	);
+	const terrainOrder = $derived(
+		terrainActive && demGrid ? terrainDrawOrder(demGrid.w - 1, demGrid.h - 1, yaw) : []
+	);
+	const terrainFaces = $derived(
+		terrainActive && demGrid && refFrame
+			? buildTerrainBlockFaces(demGrid, refFrame, project, BLOCK_DEPTH_M)
+			: []
+	);
+
 	// Map the snapshot's lat/lon corners onto the rotated ground plane and
 	// derive the affine transform that places the image as the right
 	// parallelogram. Orthographic projection means a planar rectangle stays
@@ -270,27 +406,96 @@
 	const tileOpacity = $derived(tileFadeOpacity(pitch));
 	const blockFaces = $derived(buildBlockFaces(tileImage, refFrame, project, BLOCK_DEPTH_M));
 
-	const projectedPoints = $derived(slicedPoints.map((p) => project3d(p)));
+	const projectedPoints = $derived(renderSliced.map((p) => project3d(p)));
 
-	const shadowPoints = $derived(buildShadowPoints(slicedPoints, refFrame, project));
+	// Terrain occlusion: a per-point visibility mask (visibility.ts —
+	// view-ray march over the DEM, conservative + smoothed). The route
+	// still draws ON TOP of the mesh; hidden stretches are simply omitted
+	// (no ghost). Recomputes per camera change, not per hover.
+	const visMask = $derived.by(() => {
+		const g = demGrid;
+		if (!terrainActive || !g) return null;
+		return computeVisibility(renderSliced, g, { yaw, pitch, zExaggeration });
+	});
+	const visibleAt = $derived.by(() => {
+		const mask = visMask;
+		if (!mask) return undefined;
+		const pts = renderSliced;
+		return (distM: number) => visibleAtDist(pts, mask, distM);
+	});
+
+	const shadowPoints = $derived(buildShadowPoints(renderSliced, refFrame, project, groundEleAt));
 	const anchorLines = $derived(
-		buildAnchorLines(points, startDistM, endDistM, refFrame, project)
+		buildAnchorLines(
+			renderFull,
+			startDistM,
+			endDistM,
+			refFrame,
+			project,
+			ANCHOR_STEP_M,
+			groundEleAt,
+			visibleAt
+		)
 	);
-	const boundaryAnchors = $derived(buildBoundaryAnchors(points, bins, refFrame, project, theme));
+	const boundaryAnchors = $derived(
+		buildBoundaryAnchors(renderFull, bins, refFrame, project, theme, groundEleAt, visibleAt)
+	);
 	const polylines = $derived(
-		buildPolylineRuns(slicedPoints, projectedPoints, bins, refFrame, theme)
+		buildPolylineRuns(renderSliced, projectedPoints, bins, refFrame, theme, visMask ?? undefined)
 	);
+	// Route points whose screen position falls on a FRONT block wall. The
+	// walls aren't terrain, so the visibility mask can't know about them —
+	// but the camera is always outside the block, so every route point
+	// overlapping a front wall is behind it.
+	const wallCovered = $derived.by(() => {
+		const fronts = terrainFaces.filter((f) => f.isFront);
+		if (!terrainActive || fronts.length === 0) return null;
+		return projectedPoints.map(([x, y]) =>
+			fronts.some((f) => pointInPolygon(x, y, f.verts))
+		);
+	});
+	// Ghost: everything the viewer can't see solid — stretches behind real
+	// terrain (mask) plus stretches behind the block walls — drawn at low
+	// opacity ABOVE the walls, so both terrain and solid earth read as
+	// see-through for the ghost while the solid route stays swallowed.
+	// The include-flags are dilated by one point so ghost runs share their
+	// boundary point with the solid runs and the line reads continuous as
+	// it dives behind a ridge.
+	const ghostPolylines = $derived.by(() => {
+		const mask = visMask;
+		if (!mask) return [];
+		const hidden = mask.map((v, i) => !v || (wallCovered?.[i] ?? false));
+		const include = hidden.map(
+			(h, i) => h || (hidden[i - 1] ?? false) || (hidden[i + 1] ?? false)
+		);
+		if (!include.some(Boolean)) return [];
+		return buildPolylineRuns(renderSliced, projectedPoints, bins, refFrame, theme, include);
+	});
 
 	const startEnd = $derived.by(() => {
 		if (projectedPoints.length < 2) return null;
-		return { a: projectedPoints[0], b: projectedPoints[projectedPoints.length - 1] };
+		return {
+			a: visMask && !visMask[0] ? null : projectedPoints[0],
+			b: visMask && !visMask[visMask.length - 1] ? null : projectedPoints[projectedPoints.length - 1]
+		};
 	});
 
 	const externalHoverHighlight = $derived(
-		buildHoverHighlight(externalHoverDistM, bins, points, slicedPoints, refFrame, project, theme)
+		buildHoverHighlight(
+			externalHoverDistM,
+			bins,
+			renderFull,
+			renderSliced,
+			refFrame,
+			project,
+			theme,
+			groundEleAt
+		)
 	);
 	const allDrapes = $derived(
-		showAllDrapes ? buildAllDrapes(bins, points, slicedPoints, refFrame, project, theme) : []
+		showAllDrapes
+			? buildAllDrapes(bins, renderFull, renderSliced, refFrame, project, theme, groundEleAt)
+			: []
 	);
 
 	// Viewport (visible window in viewBox space).
@@ -517,6 +722,7 @@
 		document.removeEventListener('pointermove', onResizeMove);
 		document.removeEventListener('pointerup', onResizeUp);
 		if (vertHideTimer) clearTimeout(vertHideTimer);
+		if (terrainHideTimer) clearTimeout(terrainHideTimer);
 		if (mapMenuHideTimer) clearTimeout(mapMenuHideTimer);
 		cancelToggleAnim();
 		document.body.style.cursor = '';
@@ -545,33 +751,88 @@
 		preserveAspectRatio="xMidYMid meet"
 		style:overflow="visible"
 	>
-		{#if showMap && blockFaces.length > 0 && tileOpacity > 0.01}
-			{#each blockFaces as face, i (i)}
+		{#if terrainActive && groundTexture}
+			<!-- Terrain ground: the texture clipped per triangle in UV space and
+			     warped by per-frame affines. The clip paths are static per grid;
+			     each frame only the matrix strings change, and the keyed each
+			     reorders DOM only when yaw crosses a quadrant. Back block faces
+			     draw before the mesh, front faces after it, so far valleys can't
+			     bleed through the near silhouette. tileFadeOpacity deliberately
+			     doesn't apply — edge-on is the terrain payoff. -->
+			<defs>
+				<image
+					id="tex-{uid}"
+					href={groundTexture.url}
+					width="1"
+					height="1"
+					preserveAspectRatio="none"
+				/>
+				{#each clipTriangles as tri, i (i)}
+					<clipPath id="tri-{uid}-{i}" clipPathUnits="userSpaceOnUse">
+						<path d={tri.d} />
+					</clipPath>
+				{/each}
+			</defs>
+			{#each terrainFaces.filter((f) => !f.isFront) as face, i (i)}
 				<polygon
 					points={face.points}
 					fill="#f0e6d6"
 					stroke="#d4c5ad"
 					stroke-width="1"
 					stroke-linejoin="round"
-					opacity={tileOpacity}
+					opacity={terrainOpacity}
 					pointer-events="none"
 				/>
 			{/each}
+			<g opacity={terrainOpacity} pointer-events="none">
+				{#each terrainOrder as i (i)}
+					{#if terrainMesh[i]}
+						{@const m = terrainMesh[i]}
+						<g
+							transform="matrix({m.a} {m.b} {m.c} {m.d} {m.e} {m.f})"
+							clip-path="url(#tri-{uid}-{i})"
+						>
+							<use href="#tex-{uid}" />
+						</g>
+					{/if}
+				{/each}
+			</g>
+			<!-- Front block faces draw AFTER the route (below, past the dots):
+			     the block is solid earth, so a route stretch whose screen
+			     position falls on a side wall must be swallowed by it instead
+			     of floating on blank cardboard. -->
+		{:else}
+			{#if showMap && blockFaces.length > 0 && tileOpacity > 0.01}
+				{#each blockFaces as face, i (i)}
+					<polygon
+						points={face.points}
+						fill="#f0e6d6"
+						stroke="#d4c5ad"
+						stroke-width="1"
+						stroke-linejoin="round"
+						opacity={tileOpacity}
+						pointer-events="none"
+					/>
+				{/each}
+			{/if}
+
+			{#if showMap && tileImage && tileTransform && tileOpacity > 0.01}
+				<image
+					href={tileImage.url}
+					width="1"
+					height="1"
+					preserveAspectRatio="none"
+					transform="matrix({tileTransform.a} {tileTransform.b} {tileTransform.c} {tileTransform.d} {tileTransform.e} {tileTransform.f})"
+					opacity={tileOpacity}
+					pointer-events="none"
+				/>
+			{/if}
 		{/if}
 
-		{#if showMap && tileImage && tileTransform && tileOpacity > 0.01}
-			<image
-				href={tileImage.url}
-				width="1"
-				height="1"
-				preserveAspectRatio="none"
-				transform="matrix({tileTransform.a} {tileTransform.b} {tileTransform.c} {tileTransform.d} {tileTransform.e} {tileTransform.f})"
-				opacity={tileOpacity}
-				pointer-events="none"
-			/>
-		{/if}
-
-		{#if shadowPoints}
+		<!-- No route shadow in terrain mode: the hillshaded mesh carries the
+		     depth cue, and a translucent shadow smeared over real relief
+		     reads as dirt rather than depth. -->
+		{#if shadowPoints && !terrainActive}
 			<polyline
 				points={shadowPoints}
 				fill="none"
@@ -661,26 +922,66 @@
 		{/if}
 
 		{#if startEnd}
-			<circle
-				cx={startEnd.a[0]}
-				cy={startEnd.a[1]}
-				r={STROKE * 1.6}
-				fill="#10b981"
-				stroke="#ffffff"
-				stroke-width="3"
-			/>
-			<circle
-				cx={startEnd.b[0]}
-				cy={startEnd.b[1]}
-				r={STROKE * 1.6}
-				fill="#dc2626"
-				stroke="#ffffff"
-				stroke-width="3"
-			/>
+			{#if startEnd.a}
+				<circle
+					cx={startEnd.a[0]}
+					cy={startEnd.a[1]}
+					r={STROKE * 1.6}
+					fill="#10b981"
+					stroke="#ffffff"
+					stroke-width="3"
+				/>
+			{/if}
+			{#if startEnd.b}
+				<circle
+					cx={startEnd.b[0]}
+					cy={startEnd.b[1]}
+					r={STROKE * 1.6}
+					fill="#dc2626"
+					stroke="#ffffff"
+					stroke-width="3"
+				/>
+			{/if}
 		{/if}
 
+		{#if terrainActive}
+			<!-- Front block faces, deliberately AFTER the route and dots: the
+			     earth block is solid, so route stretches whose screen position
+			     falls on a side wall are swallowed by it — the visibility mask
+			     only knows about the DEM surface, not the fictional walls. -->
+			{#each terrainFaces.filter((f) => f.isFront) as face, i (i)}
+				<polygon
+					points={face.points}
+					fill="#f0e6d6"
+					stroke="#d4c5ad"
+					stroke-width="1"
+					stroke-linejoin="round"
+					opacity={terrainOpacity}
+					pointer-events="none"
+				/>
+			{/each}
+		{/if}
+
+		<!-- Ghost above the walls AND the mesh: everything the viewer can't
+		     see solid (behind terrain or behind a wall) stays traceable.
+		     Only the hover marker sits higher. -->
+		{#each ghostPolylines as line, i (i)}
+			<polyline
+				points={line.points}
+				fill="none"
+				stroke={line.color}
+				stroke-opacity="0.22"
+				stroke-width={STROKE}
+				stroke-linecap="round"
+				stroke-linejoin="round"
+				pointer-events="none"
+			/>
+		{/each}
+
 		{#if hoverInfo}
-			{@const ip = findPointAtDistance(points, hoverInfo.distM)}
+			<!-- renderFull, not points: the dot must ride the terrain-displaced
+			     route. The tooltip below keeps GPS elevation from `points`. -->
+			{@const ip = findPointAtDistance(renderFull, hoverInfo.distM)}
 			{@const [hx, hy] = project(ip.lat, ip.lon, ip.ele)}
 			<circle
 				cx={hx}
@@ -849,6 +1150,71 @@
 					<line x1="12" y1="9.5" x2="12" y2="20" stroke-dasharray="2.4 2" />
 				</svg>
 			</button>
+
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div
+				class="relative"
+				onpointerenter={openTerrainPopover}
+				onpointerleave={closeTerrainPopover}
+			>
+				<button
+					type="button"
+					onclick={() => (terrainOn = !terrainOn)}
+					class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 {terrainOn
+						? 'text-neutral-800'
+						: 'text-neutral-300'}"
+					aria-label="Toggle terrain"
+					aria-pressed={terrainOn}
+					title={terrainOn ? 'Flatten ground' : 'Show terrain'}
+				>
+					<svg
+						viewBox="0 0 24 24"
+						class="h-4 w-4"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="1.8"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+					>
+						<path d="m8 3 4 8 5-5 5 15H2L8 3z" />
+					</svg>
+				</button>
+				{#if showTerrainPopover && terrainOn}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div
+						onpointerenter={openTerrainPopover}
+						onpointerleave={closeTerrainPopover}
+						class="absolute bottom-full right-0 mb-1 flex flex-col gap-2 rounded-md bg-white px-3 py-2 shadow-lg ring-1 ring-neutral-200"
+					>
+						<label class="flex items-center gap-2 text-[10px] font-medium text-neutral-600">
+							<span class="w-10">Float</span>
+							<input
+								type="range"
+								min="0"
+								max="50"
+								step="1"
+								bind:value={floatM}
+								class="w-28 accent-neutral-900"
+								aria-label="Route float height above terrain"
+							/>
+							<span class="w-8 text-right tabular-nums">{floatM}m</span>
+						</label>
+						<label class="flex items-center gap-2 text-[10px] font-medium text-neutral-600">
+							<span class="w-10">Opacity</span>
+							<input
+								type="range"
+								min="0.2"
+								max="1"
+								step="0.05"
+								bind:value={terrainOpacity}
+								class="w-28 accent-neutral-900"
+								aria-label="Terrain opacity"
+							/>
+							<span class="w-8 text-right tabular-nums">{Math.round(terrainOpacity * 100)}%</span>
+						</label>
+					</div>
+				{/if}
+			</div>
 
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div

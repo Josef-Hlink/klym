@@ -186,6 +186,24 @@ describe('buildPolylineRuns', () => {
 		expect(buildPolylineRuns([route[0]], [projectedPoints[0]], [], refFrame)).toEqual([]);
 		expect(buildPolylineRuns(route, projectedPoints, [], null)).toEqual([]);
 	});
+
+	it('a visibility mask omits hidden stretches and breaks runs around them', () => {
+		const bins: GradeBin[] = [
+			{ startM: 0, endM: 1000, startEle: 0, endEle: 100, grade: 10 }
+		];
+		// Points 8..12 hidden → segments 7..12 dropped (a segment needs
+		// BOTH endpoints visible), leaving runs over points 0..7 and 13..20.
+		const mask = route.map((_, i) => i < 8 || i > 12);
+		const runs = buildPolylineRuns(route, projectedPoints, bins, refFrame, 'klym', mask);
+		expect(runs).toHaveLength(2);
+		const lengths = runs.map((r) => r.points.split(' ').length).sort((a, b) => a - b);
+		expect(lengths).toEqual([8, 8]);
+		// An all-true mask is byte-identical to no mask.
+		const all = route.map(() => true);
+		expect(buildPolylineRuns(route, projectedPoints, bins, refFrame, 'klym', all)).toEqual(
+			buildPolylineRuns(route, projectedPoints, bins, refFrame, 'klym')
+		);
+	});
 });
 
 describe('buildDrape', () => {
@@ -246,5 +264,55 @@ describe('buildAllDrapes', () => {
 	it('returns an empty array when bins is empty or refFrame missing', () => {
 		expect(buildAllDrapes([], route, route, refFrame, project)).toEqual([]);
 		expect(buildAllDrapes(bins, route, route, null, project)).toEqual([]);
+	});
+});
+
+describe('groundEleAt sampler', () => {
+	// Projector exposing elevation as y so ground heights are readable from
+	// the output strings: (lat, lon, ele) → [lon, ele, -lat].
+	const eleAsY: Projector = (lat, lon, ele) => [lon, ele, -lat] as Projected;
+	// Fake terrain: ground rises with latitude, distinct per point.
+	const sampler = (lat: number, _lon: number) => (lat - 45) * 10000;
+	const bins: GradeBin[] = [{ startM: 0, endM: 1000, startEle: 0, endEle: 100, grade: 10 }];
+
+	it('shadow points land on the sampled ground, not minEle', () => {
+		const out = buildShadowPoints(route, refFrame, eleAsY, sampler);
+		const ys = out.split(' ').map((t) => Number(t.split(',')[1]));
+		for (let i = 0; i < route.length; i++) {
+			expect(ys[i]).toBeCloseTo(sampler(route[i].lat, route[i].lon), 1);
+		}
+	});
+
+	it('anchor and boundary-anchor bottoms follow the sampler', () => {
+		const lines = buildAnchorLines(route, 0, 1000, refFrame, eleAsY, 250, sampler);
+		// Route lat rises with distance, so the sampled ground rises across
+		// anchors (the first sits at lat 45 exactly → sampler = 0).
+		expect(lines[0].y2).toBeCloseTo(0, 6);
+		for (let i = 1; i < lines.length; i++) expect(lines[i].y2).toBeGreaterThan(lines[i - 1].y2);
+		const flat = buildAnchorLines(route, 0, 1000, refFrame, eleAsY, 250);
+		for (const l of flat) expect(l.y2).toBe(0); // minEle = 0
+		const anchors = buildBoundaryAnchors(route, bins, refFrame, eleAsY, 'klym', sampler);
+		const ip = route[route.length - 1];
+		expect(anchors[0].y2).toBeCloseTo(sampler(ip.lat, ip.lon), 1);
+	});
+
+	it('drape bottoms follow the sampler', () => {
+		const withSampler = buildDrape(bins[0], route, route, refFrame, eleAsY, sampler);
+		const without = buildDrape(bins[0], route, route, refFrame, eleAsY);
+		expect(withSampler.drape).not.toBe(without.drape);
+		// Top edges are identical — only the ground side moves.
+		expect(withSampler.polyline).toBe(without.polyline);
+	});
+
+	it('omitting the sampler reproduces the old flat-ground output exactly', () => {
+		expect(buildShadowPoints(route, refFrame, project)).toBe(
+			buildShadowPoints(route, refFrame, project, () => refFrame.minEle)
+		);
+		expect(buildAllDrapes(bins, route, route, refFrame, project)).toEqual(
+			buildAllDrapes(bins, route, route, refFrame, project, 'klym', () => refFrame.minEle)
+		);
+		expect(buildHoverHighlight(250, bins, route, route, refFrame, project)).toEqual(
+			buildHoverHighlight(250, bins, route, route, refFrame, project, 'klym', () => refFrame.minEle)
+		);
 	});
 });

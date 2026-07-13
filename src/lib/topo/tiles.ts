@@ -94,13 +94,17 @@ export function tileYToLat(y: number, z: number): number {
 	return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
 }
 
-// Highest zoom level that keeps the tile grid under TILE_MAX_TILES_PER_AXIS
+// Highest zoom level that keeps the tile grid under maxPerAxis tiles
 // (so we don't fetch hundreds of tiles for a country-scale route).
-export function pickTileZoom(bbox: TileBBox, maxZoom: number): number {
+export function pickTileZoom(
+	bbox: TileBBox,
+	maxZoom: number,
+	maxPerAxis = TILE_MAX_TILES_PER_AXIS
+): number {
 	for (let z = maxZoom; z >= 1; z--) {
 		const xRange = lonToTileX(bbox.maxLon, z) - lonToTileX(bbox.minLon, z);
 		const yRange = latToTileY(bbox.minLat, z) - latToTileY(bbox.maxLat, z);
-		if (xRange <= TILE_MAX_TILES_PER_AXIS && yRange <= TILE_MAX_TILES_PER_AXIS) {
+		if (xRange <= maxPerAxis && yRange <= maxPerAxis) {
 			return z;
 		}
 	}

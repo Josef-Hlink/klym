@@ -16,6 +16,17 @@ import type { TileImage } from './tiles.js';
 // stable regardless of GPX point density.
 export const ANCHOR_STEP_M = 250;
 
+// Ground elevation lookup. Builders that drop geometry to "the ground"
+// (shadow, anchors, drapes) take an optional sampler; the default is the
+// flat plane at refFrame.minEle, which the terrain mode replaces with a
+// DEM lookup so bottoms land on the terrain surface.
+export type GroundEleAt = (lat: number, lon: number) => number;
+
+const flatGround = (refFrame: RefFrame): GroundEleAt => {
+	const minEle = refFrame.minEle;
+	return () => minEle;
+};
+
 // Affine matrix that maps the unit square to the rotated ground
 // parallelogram. Orthographic projection preserves parallelism, so a planar
 // rectangle (the OSM tile snapshot at minEle) stays a parallelogram under
@@ -93,12 +104,14 @@ export function buildBlockFaces(
 export function buildShadowPoints(
 	slicedPoints: readonly RoutePoint[],
 	refFrame: RefFrame | null,
-	project: Projector
+	project: Projector,
+	groundEleAt?: GroundEleAt
 ): string {
 	if (!refFrame || slicedPoints.length < 2) return '';
+	const groundAt = groundEleAt ?? flatGround(refFrame);
 	const parts: string[] = [];
 	for (const p of slicedPoints) {
-		const [x, y] = project(p.lat, p.lon, refFrame.minEle);
+		const [x, y] = project(p.lat, p.lon, groundAt(p.lat, p.lon));
 		parts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
 	}
 	return parts.join(' ');
@@ -115,15 +128,19 @@ export function buildAnchorLines(
 	endDistM: number,
 	refFrame: RefFrame | null,
 	project: Projector,
-	stepM: number = ANCHOR_STEP_M
+	stepM: number = ANCHOR_STEP_M,
+	groundEleAt?: GroundEleAt,
+	visibleAt?: (distM: number) => boolean
 ): AnchorLine[] {
 	const out: AnchorLine[] = [];
 	if (!refFrame || endDistM <= startDistM) return out;
+	const groundAt = groundEleAt ?? flatGround(refFrame);
 	for (let d = startDistM; d <= endDistM + 1e-3; d += stepM) {
 		const distM = Math.min(d, endDistM);
+		if (visibleAt && !visibleAt(distM)) continue;
 		const ip = findPointAtDistance(points as RoutePoint[], distM);
 		const [tx, ty] = project(ip.lat, ip.lon, ip.ele);
-		const [bx, by] = project(ip.lat, ip.lon, refFrame.minEle);
+		const [bx, by] = project(ip.lat, ip.lon, groundAt(ip.lat, ip.lon));
 		out.push({ x1: tx, y1: ty, x2: bx, y2: by });
 	}
 	return out;
@@ -139,14 +156,18 @@ export function buildBoundaryAnchors(
 	bins: readonly GradeBin[],
 	refFrame: RefFrame | null,
 	project: Projector,
-	theme: ColorTheme = 'klym'
+	theme: ColorTheme = 'klym',
+	groundEleAt?: GroundEleAt,
+	visibleAt?: (distM: number) => boolean
 ): BoundaryAnchor[] {
 	const out: BoundaryAnchor[] = [];
 	if (!refFrame || bins.length === 0) return out;
+	const groundAt = groundEleAt ?? flatGround(refFrame);
 	for (const bin of bins) {
+		if (visibleAt && !visibleAt(bin.endM)) continue;
 		const ip = findPointAtDistance(points as RoutePoint[], bin.endM);
 		const [tx, ty] = project(ip.lat, ip.lon, ip.ele);
-		const [bx, by] = project(ip.lat, ip.lon, refFrame.minEle);
+		const [bx, by] = project(ip.lat, ip.lon, groundAt(ip.lat, ip.lon));
 		out.push({ x1: tx, y1: ty, x2: bx, y2: by, color: gradeColor(bin.grade, theme) });
 	}
 	return out;
@@ -157,12 +178,19 @@ export type PolylineRun = { points: string; color: string; depth: number };
 // Group the route into runs of consecutive same-color segments and tag
 // each run with its average depth, so the template can draw back-to-front
 // (painter's algorithm) without per-segment SVG elements.
+//
+// `visible` (optional, per POINT) is the terrain-occlusion mask from
+// visibility.ts: a segment draws only when BOTH its endpoints are visible
+// (conservative — the route tucks behind a ridge at the last visible
+// point), and hidden segments simply break the runs. Omitted = all
+// visible, byte-identical to the unmasked output.
 export function buildPolylineRuns(
 	slicedPoints: readonly RoutePoint[],
 	projectedPoints: readonly Projected[],
 	bins: readonly GradeBin[],
 	refFrame: RefFrame | null,
-	theme: ColorTheme = 'klym'
+	theme: ColorTheme = 'klym',
+	visible?: readonly boolean[]
 ): PolylineRun[] {
 	const out: PolylineRun[] = [];
 	if (slicedPoints.length < 2 || !refFrame) return out;
@@ -175,12 +203,17 @@ export function buildPolylineRuns(
 		const grade = bins[binIdx]?.grade ?? 0;
 		segColors[i] = gradeColor(grade, theme);
 	}
+	const segVisible = (i: number) => !visible || (visible[i] === true && visible[i + 1] === true);
 
 	let runStart = 0;
 	for (let i = 0; i < segColors.length; i++) {
+		if (!segVisible(i)) {
+			runStart = i + 1;
+			continue;
+		}
 		const isLast = i === segColors.length - 1;
-		const colorChanged = !isLast && segColors[i + 1] !== segColors[i];
-		if (isLast || colorChanged) {
+		const breakAfter = isLast || segColors[i + 1] !== segColors[i] || !segVisible(i + 1);
+		if (breakAfter) {
 			const pts: string[] = [];
 			let depthSum = 0;
 			let depthCount = 0;
@@ -212,15 +245,16 @@ export function buildDrape(
 	points: readonly RoutePoint[],
 	slicedPoints: readonly RoutePoint[],
 	refFrame: RefFrame | null,
-	project: Projector
+	project: Projector,
+	groundEleAt?: GroundEleAt
 ): DrapePath {
 	if (!refFrame) return { polyline: '', drape: '' };
-	const ground = refFrame.minEle;
+	const groundAt = groundEleAt ?? flatGround(refFrame);
 	const tops: [number, number][] = [];
 	const bots: [number, number][] = [];
 	const addPoint = (lat: number, lon: number, ele: number) => {
 		const t = project(lat, lon, ele);
-		const b = project(lat, lon, ground);
+		const b = project(lat, lon, groundAt(lat, lon));
 		tops.push([t[0], t[1]]);
 		bots.push([b[0], b[1]]);
 	};
@@ -266,7 +300,8 @@ export function buildHoverHighlight(
 	slicedPoints: readonly RoutePoint[],
 	refFrame: RefFrame | null,
 	project: Projector,
-	theme: ColorTheme = 'klym'
+	theme: ColorTheme = 'klym',
+	groundEleAt?: GroundEleAt
 ): HoverHighlight {
 	const empty: HoverHighlight = { polyline: '', drape: '', color: '' };
 	if (externalHoverDistM == null || !refFrame) return empty;
@@ -278,7 +313,7 @@ export function buildHoverHighlight(
 		}
 	}
 	if (!bin) return empty;
-	const { polyline, drape } = buildDrape(bin, points, slicedPoints, refFrame, project);
+	const { polyline, drape } = buildDrape(bin, points, slicedPoints, refFrame, project, groundEleAt);
 	return { polyline, drape, color: gradeColor(bin.grade, theme) };
 }
 
@@ -291,11 +326,12 @@ export function buildAllDrapes(
 	slicedPoints: readonly RoutePoint[],
 	refFrame: RefFrame | null,
 	project: Projector,
-	theme: ColorTheme = 'klym'
+	theme: ColorTheme = 'klym',
+	groundEleAt?: GroundEleAt
 ): DrapeColored[] {
 	if (!refFrame || bins.length === 0) return [];
 	return bins.map((bin) => ({
-		drape: buildDrape(bin, points, slicedPoints, refFrame, project).drape,
+		drape: buildDrape(bin, points, slicedPoints, refFrame, project, groundEleAt).drape,
 		color: gradeColor(bin.grade, theme)
 	}));
 }

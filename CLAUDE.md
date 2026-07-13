@@ -298,15 +298,60 @@ The non-obvious bits worth knowing at the app level:
   points via `findPointAtDistance` so the route polyline ends in the
   same spot as distance-driven features (anchor lines, hover);
   otherwise the two visibly diverge.
+- **Terrain ground (default on).** The flat ground image becomes a DEM
+  heightfield: `dem.ts` fetches AWS terrarium tiles (trial source, same
+  as the route map's MapLibre terrain — swap the URL const once the
+  self-hosted DEM archive lands) into a Mercator-uniform vertex grid
+  (~24 cells long axis) whose UVs map 1:1 onto the ground texture;
+  `terrain.ts` splits each cell into two texture-warped triangles
+  (static dilated UV clip paths + per-frame affines, yaw-quadrant
+  painter traversal) and builds block side faces that follow the DEM
+  edge profile (front/back split around the mesh). `hillshade.ts` bakes
+  a lambert shade into the texture once per texture/grid. The route is
+  re-based onto the terrain surface plus a **Float** offset (slider,
+  0–50 m, default 10; 0 is safe — the route draws on top of the mesh,
+  so a coplanar line can't be clipped, it only ghosts sooner at grazing
+  angles) so drapes/anchors stay visible — GPS elevations remain
+  the truth for stats and the hover tooltip; a **Terrain opacity**
+  slider ghosts the mesh. No route shadow in terrain mode (the
+  hillshade carries the depth cue). All four ground sources work as the
+  mesh texture; the DEM doesn't refetch on source switch or resize. DEM
+  failure falls back silently to the flat ground. `tileFadeOpacity`
+  applies only to the flat ground; terrain stays opaque edge-on (that's
+  the payoff).
+- **Ridge occlusion is a GEOMETRIC MASK, never paint order.** The route
+  always draws ON TOP of the mesh as full continuous polylines;
+  `visibility.ts` marches the view ray per route point over the
+  triangulated DEM and stretches that are clearly behind terrain are
+  dropped from the solid runs. A clearance margin, a small CONSTANT
+  near skip (~one DEM cell — only absorbing sub-cell roughness; it must
+  NOT scale with pitch or relief, that x-rayed whole foregrounds), and
+  island smoothing keep the mask stable. A route on its camera-facing
+  slope never self-occludes in a ray test (terrain falls away along the
+  ray), so no painter-era protections are needed. The front block faces
+  draw AFTER the solid route and dots — the earth block is solid, so
+  anything overlapping a side wall is swallowed. On top of the faces, a
+  0.22-opacity ghost redraws everything the viewer can't see solid:
+  mask-hidden stretches plus wall-covered ones (`pointInPolygon`
+  against the front faces' `verts` — the walls aren't terrain, so the
+  mask can't know them), dilated by one point so ghost runs share their
+  boundary point with solid runs. Anchors and endpoint dots follow the
+  mask; only the hover marker sits above the ghost. Two paint-level
+  approaches (per-pixel ray-dashed polylines, then painter-interleaved
+  per-cell route runs) are preserved on the `occlusion-dead-end` branch
+  as a record of why not: stroke width, translucent shadows and
+  supporting-slope burial make paint-level occlusion an artifact
+  factory.
 
 ### SegmentMap controls and 2D/3D toggle
 
 - **Bottom-left**: Map toggle (OSM tile + earth block).
-- **Bottom-right**: Anchor-lines toggle, Vertical exaggeration popover
-  (Windows-volume-control style — square button shows current `n×`,
-  hover opens a vertical slider via `writing-mode: vertical-lr;
-  direction: rtl;`), 2D/3D toggle pinned rightmost. The middle two
-  hide in 2D mode.
+- **Bottom-right**: Drapes toggle, Anchor-lines toggle, Terrain toggle
+  (mountain icon; hover popover with the Float and Opacity sliders),
+  Vertical exaggeration popover (Windows-volume-control style — square
+  button shows current `n×`, hover opens a vertical slider via
+  `writing-mode: vertical-lr; direction: rtl;`), 2D/3D toggle pinned
+  rightmost. All but the 2D/3D toggle hide in 2D mode.
 - **2D/3D pose memory**: `is3D` is `pitch > 0.01`. An effect mirrors
   live `(pitch, yaw)` into `(savedPitch, savedYaw)` while in 3D, so
   flatten-and-restore works even for poses reached via drag rather
