@@ -95,21 +95,22 @@ function cellTriangles(cellsX: number, cellsY: number, r: number, c: number): [P
 }
 
 // Static clip-path triangles in UV space, dilated about their centroids.
-// Index i corresponds 1:1 with buildTerrainMesh's transforms.
-export function buildClipTriangles(
-	cellsX: number,
-	cellsY: number,
-	dilate = TRI_DILATE
-): { d: string }[] {
-	const out: { d: string }[] = [];
+// Index i corresponds 1:1 with buildTerrainMesh's transforms. `d` is the
+// SVG clip path; `verts` the same (dilated) triangle as numbers for the
+// canvas painter's clip.
+export type ClipTriangle = { d: string; verts: [P2, P2, P2] };
+
+export function buildClipTriangles(cellsX: number, cellsY: number, dilate = TRI_DILATE): ClipTriangle[] {
+	const out: ClipTriangle[] = [];
 	for (let r = 0; r < cellsY; r++) {
 		for (let c = 0; c < cellsX; c++) {
 			for (const tri of cellTriangles(cellsX, cellsY, r, c)) {
 				const cx = (tri[0][0] + tri[1][0] + tri[2][0]) / 3;
 				const cy = (tri[0][1] + tri[1][1] + tri[2][1]) / 3;
-				const pts = tri.map(([x, y]) => [cx + (x - cx) * dilate, cy + (y - cy) * dilate]);
+				const pts = tri.map(([x, y]): P2 => [cx + (x - cx) * dilate, cy + (y - cy) * dilate]);
 				out.push({
-					d: `M ${pts[0][0].toFixed(6)} ${pts[0][1].toFixed(6)} L ${pts[1][0].toFixed(6)} ${pts[1][1].toFixed(6)} L ${pts[2][0].toFixed(6)} ${pts[2][1].toFixed(6)} Z`
+					d: `M ${pts[0][0].toFixed(6)} ${pts[0][1].toFixed(6)} L ${pts[1][0].toFixed(6)} ${pts[1][1].toFixed(6)} L ${pts[2][0].toFixed(6)} ${pts[2][1].toFixed(6)} Z`,
+					verts: [pts[0], pts[1], pts[2]]
 				});
 			}
 		}

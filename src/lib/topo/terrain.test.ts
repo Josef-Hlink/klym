@@ -111,6 +111,21 @@ describe('buildClipTriangles', () => {
 			expect(d1 / d0).toBeCloseTo(TRI_DILATE, 3);
 		}
 	});
+
+	it('numeric verts mirror the path string (same dilated triangle)', () => {
+		for (const tri of buildClipTriangles(3, 2)) {
+			const nums = tri.d
+				.replace(/[MLZ]/g, '')
+				.trim()
+				.split(/\s+/)
+				.map(Number);
+			expect(tri.verts).toHaveLength(3);
+			tri.verts.forEach(([x, y], i) => {
+				expect(x).toBeCloseTo(nums[i * 2], 5);
+				expect(y).toBeCloseTo(nums[i * 2 + 1], 5);
+			});
+		}
+	});
 });
 
 describe('buildTerrainMesh', () => {

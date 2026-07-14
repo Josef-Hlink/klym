@@ -77,6 +77,19 @@ describe('buildBlockFaces', () => {
 		}
 	});
 
+	it('numeric verts mirror the points string to 1 decimal', () => {
+		const faces = buildBlockFaces(tileImage, refFrame, project, 100);
+		for (const face of faces) {
+			const tokens = face.points.split(' ');
+			expect(face.verts).toHaveLength(tokens.length);
+			face.verts.forEach(([x, y], i) => {
+				const [sx, sy] = tokens[i].split(',').map(Number);
+				expect(x).toBeCloseTo(sx, 1);
+				expect(y).toBeCloseTo(sy, 1);
+			});
+		}
+	});
+
 	it('returns an empty array when tileImage or refFrame is missing', () => {
 		expect(buildBlockFaces(null, refFrame, project, 100)).toEqual([]);
 		expect(buildBlockFaces(tileImage, null, project, 100)).toEqual([]);
@@ -86,7 +99,7 @@ describe('buildBlockFaces', () => {
 describe('buildShadowPoints', () => {
 	it('returns one point per slicedPoint, all at refFrame.minEle', () => {
 		const out = buildShadowPoints(route, refFrame, project);
-		const tokens = out.split(' ');
+		const tokens = out.points.split(' ');
 		expect(tokens).toHaveLength(route.length);
 		// Identity projector puts ele in slot 2, but shadow only uses x/y;
 		// confirm parsing yields finite numbers and the count matches.
@@ -97,9 +110,23 @@ describe('buildShadowPoints', () => {
 		}
 	});
 
-	it('returns an empty string when refFrame is missing or there is < 2 points', () => {
-		expect(buildShadowPoints(route, null, project)).toBe('');
-		expect(buildShadowPoints(route.slice(0, 1), refFrame, project)).toBe('');
+	it('numeric pts mirror the string to 1 decimal', () => {
+		const out = buildShadowPoints(route, refFrame, project);
+		expect(out.pts).toHaveLength(route.length);
+		const tokens = out.points.split(' ');
+		out.pts.forEach(([x, y], i) => {
+			const [sx, sy] = tokens[i].split(',').map(Number);
+			expect(x).toBeCloseTo(sx, 1);
+			expect(y).toBeCloseTo(sy, 1);
+		});
+	});
+
+	it('returns empty when refFrame is missing or there is < 2 points', () => {
+		expect(buildShadowPoints(route, null, project)).toEqual({ points: '', pts: [] });
+		expect(buildShadowPoints(route.slice(0, 1), refFrame, project)).toEqual({
+			points: '',
+			pts: []
+		});
 	});
 });
 
@@ -187,6 +214,23 @@ describe('buildPolylineRuns', () => {
 		expect(buildPolylineRuns(route, projectedPoints, [], null)).toEqual([]);
 	});
 
+	it('numeric pts mirror the points string to 1 decimal', () => {
+		const bins: GradeBin[] = [
+			{ startM: 0, endM: 500, startEle: 0, endEle: 5, grade: 1 },
+			{ startM: 500, endM: 1000, startEle: 5, endEle: 105, grade: 10 }
+		];
+		const runs = buildPolylineRuns(route, projectedPoints, bins, refFrame);
+		for (const run of runs) {
+			const tokens = run.points.split(' ');
+			expect(run.pts).toHaveLength(tokens.length);
+			run.pts.forEach(([x, y], i) => {
+				const [sx, sy] = tokens[i].split(',').map(Number);
+				expect(x).toBeCloseTo(sx, 1);
+				expect(y).toBeCloseTo(sy, 1);
+			});
+		}
+	});
+
 	it('a visibility mask omits hidden stretches and breaks runs around them', () => {
 		const bins: GradeBin[] = [
 			{ startM: 0, endM: 1000, startEle: 0, endEle: 100, grade: 10 }
@@ -219,9 +263,27 @@ describe('buildDrape', () => {
 		expect(polyline.split(' ')).toHaveLength(9);
 	});
 
+	it('numeric quads and topPts mirror the strings', () => {
+		const { polyline, topPts, drape, quads } = buildDrape(bin, route, route, refFrame, project);
+		expect(quads).toHaveLength((drape.match(/M[^M]+/g) ?? []).length);
+		expect(topPts).toHaveLength(polyline.split(' ').length);
+		polyline.split(' ').forEach((t, i) => {
+			const [sx, sy] = t.split(',').map(Number);
+			expect(topPts[i][0]).toBeCloseTo(sx, 1);
+			expect(topPts[i][1]).toBeCloseTo(sy, 1);
+		});
+		// First quad's four corners match the first M..Z subpath.
+		const first = (drape.match(/M[^M]+/g) ?? [])[0] ?? '';
+		const nums = (first.match(/-?\d+(\.\d+)?/g) ?? []).map(Number);
+		quads[0].forEach(([x, y], i) => {
+			expect(x).toBeCloseTo(nums[i * 2], 1);
+			expect(y).toBeCloseTo(nums[i * 2 + 1], 1);
+		});
+	});
+
 	it('returns empty paths when refFrame is missing', () => {
 		const out = buildDrape(bin, route, route, null, project);
-		expect(out).toEqual({ polyline: '', drape: '' });
+		expect(out).toEqual({ polyline: '', topPts: [], drape: '', quads: [] });
 	});
 });
 
@@ -239,7 +301,7 @@ describe('buildHoverHighlight', () => {
 	});
 
 	it('returns the empty highlight when distM is null or no bin matches', () => {
-		const empty = { polyline: '', drape: '', color: '' };
+		const empty = { polyline: '', topPts: [], drape: '', quads: [], color: '' };
 		expect(buildHoverHighlight(null, bins, route, route, refFrame, project)).toEqual(empty);
 		expect(buildHoverHighlight(250, [], route, route, refFrame, project)).toEqual(empty);
 		expect(buildHoverHighlight(250, bins, route, route, null, project)).toEqual(empty);
@@ -277,7 +339,7 @@ describe('groundEleAt sampler', () => {
 
 	it('shadow points land on the sampled ground, not minEle', () => {
 		const out = buildShadowPoints(route, refFrame, eleAsY, sampler);
-		const ys = out.split(' ').map((t) => Number(t.split(',')[1]));
+		const ys = out.points.split(' ').map((t) => Number(t.split(',')[1]));
 		for (let i = 0; i < route.length; i++) {
 			expect(ys[i]).toBeCloseTo(sampler(route[i].lat, route[i].lon), 1);
 		}
@@ -305,7 +367,7 @@ describe('groundEleAt sampler', () => {
 	});
 
 	it('omitting the sampler reproduces the old flat-ground output exactly', () => {
-		expect(buildShadowPoints(route, refFrame, project)).toBe(
+		expect(buildShadowPoints(route, refFrame, project)).toEqual(
 			buildShadowPoints(route, refFrame, project, () => refFrame.minEle)
 		);
 		expect(buildAllDrapes(bins, route, route, refFrame, project)).toEqual(
