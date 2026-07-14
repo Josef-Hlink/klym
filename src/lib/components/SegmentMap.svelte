@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { page } from '$app/state';
 	import { findPointAtDistance, gradeColor, type ColorTheme, type GradeBin } from '$lib/elevation.js';
 	import { fmtKm, fmtM } from '$lib/format.js';
 	import {
@@ -22,6 +23,8 @@
 		terrainDrawOrder
 	} from '$lib/topo/terrain.js';
 	import { bakeHillshade } from '$lib/topo/hillshade.js';
+	import { createMeshCache, renderScene } from '$lib/topo/paint.js';
+	import { buildScene, type SceneOp } from '$lib/topo/scene.js';
 	import { computeVisibility, visibleAtDist } from '$lib/topo/visibility.js';
 	import {
 		clampDataAspect,
@@ -48,6 +51,7 @@
 	import {
 		applyZoomAtCursor,
 		clampViewport,
+		computeViewTransform,
 		defaultViewport,
 		formatViewBox,
 		isZoomedOrPanned,
@@ -75,8 +79,18 @@
 	}: Props = $props();
 
 	// Unique per component instance — prefixes the terrain defs ids so two
-	// SegmentMaps on one page can't collide.
+	// SegmentMaps on one page can't collide. (SVG fallback only; the canvas
+	// painter has no ids.)
 	const uid = $props.id();
+
+	// Painter selection: canvas by default. `?painter=svg` keeps the legacy
+	// SVG template alive for A/B parity checks — same geometry, different
+	// executor. The canvas painter exists because the per-frame SVG DOM
+	// mutations (~3700 nodes, 912 clip paths) both invited extension
+	// cosmetic-filter style-recalc storms (AdBlock made prod unusable) and
+	// cost real time on large segments; canvas repaints are pixels the DOM
+	// never sees.
+	const useCanvas = $derived(page.url.searchParams.get('painter') !== 'svg');
 
 	const STROKE = 6;
 	const DRAG_THRESHOLD_PX = 4;
@@ -94,6 +108,7 @@
 
 	let wrapperEl: HTMLDivElement | null = $state(null);
 	let svgEl: SVGSVGElement | null = $state(null);
+	let canvasEl: HTMLCanvasElement | null = $state(null);
 
 	let yaw = $state(0);
 	let pitch = $state(0);
@@ -155,21 +170,23 @@
 	let userHeight = $state<number | null>(null);
 	let wrapperWidth = $state(0);
 
-	// Cached on-screen rects for the SVG and wrapper. getBoundingClientRect
-	// forces a synchronous style/layout flush; calling it on every pointermove
-	// reflowed the entire (huge) topo DOM per event — profiled at ~19s of
-	// "Recalculate style" while map tiles were still streaming in and keeping
-	// layout dirty. The on-screen rect only changes on scroll / resize /
-	// relayout, never between two moves, so cache it and invalidate on those.
-	let cachedSvgRect: DOMRect | null = null;
+	// Cached on-screen rects for the paint surface (canvas or SVG) and the
+	// wrapper. getBoundingClientRect forces a synchronous style/layout flush;
+	// calling it on every pointermove reflowed the entire (huge) topo DOM per
+	// event — profiled at ~19s of "Recalculate style" while map tiles were
+	// still streaming in and keeping layout dirty. The on-screen rect only
+	// changes on scroll / resize / relayout, never between two moves, so
+	// cache it and invalidate on those.
+	let cachedSurfaceRect: DOMRect | null = null;
 	let cachedWrapRect: DOMRect | null = null;
 	function invalidateRects() {
-		cachedSvgRect = null;
+		cachedSurfaceRect = null;
 		cachedWrapRect = null;
 	}
-	function svgRect(): DOMRect | null {
-		if (!svgEl) return null;
-		return (cachedSvgRect ??= svgEl.getBoundingClientRect());
+	function surfaceRect(): DOMRect | null {
+		const el = canvasEl ?? svgEl;
+		if (!el) return null;
+		return (cachedSurfaceRect ??= el.getBoundingClientRect());
 	}
 	function wrapRect(): DOMRect | null {
 		if (!wrapperEl) return null;
@@ -540,6 +557,132 @@
 
 	const viewBoxAttr = $derived(formatViewBox(viewport, dimensions));
 
+	// ---- Canvas painter -------------------------------------------------
+	// The scene is the SVG template's paint order reified as data
+	// (scene.ts, tested); renderScene (paint.ts) executes it. buildScene
+	// consumes the deriveds above so each keeps its own recompute cadence.
+	// The hover marker is deliberately NOT in the scene — it's appended at
+	// paint time so a pointermove doesn't rebuild the ~1000-op list.
+	const sceneOps = $derived(
+		buildScene({
+			stroke: STROKE,
+			terrainActive,
+			hasGroundTexture: !!groundTexture,
+			terrainOpacity,
+			showMap,
+			tileOpacity,
+			hasTileImage: !!tileImage,
+			tileTransform,
+			clipTriangles,
+			terrainMesh,
+			terrainOrder,
+			terrainFaces,
+			blockFaces,
+			shadow: shadowPoints,
+			allDrapes,
+			externalHover: externalHoverHighlight,
+			showAnchorLines,
+			anchorLines,
+			boundaryAnchors,
+			polylines,
+			ghostPolylines,
+			startEnd
+		})
+	);
+
+	// Device pixel ratio as state so monitor moves re-render crisply. The
+	// matchMedia listener must be re-armed per value (the query names the
+	// current ratio).
+	let dpr = $state(typeof window === 'undefined' ? 1 : window.devicePixelRatio);
+	let dprCleanup: (() => void) | null = null;
+	function armDprListener() {
+		dprCleanup?.();
+		const mq = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+		const onChange = () => {
+			dpr = window.devicePixelRatio;
+			armDprListener();
+		};
+		mq.addEventListener('change', onChange, { once: true });
+		dprCleanup = () => mq.removeEventListener('change', onChange);
+	}
+
+	const meshCache = createMeshCache();
+	let repaintFrame: number | null = null;
+
+	function hoverMarkerOp(): SceneOp | null {
+		if (!hoverInfo) return null;
+		// renderFull, not points: the dot must ride the terrain-displaced
+		// route. The tooltip keeps GPS elevation from `points`.
+		const ip = findPointAtDistance(renderFull, hoverInfo.distM);
+		const [hx, hy] = project(ip.lat, ip.lon, ip.ele);
+		return {
+			kind: 'circle',
+			cx: hx,
+			cy: hy,
+			r: STROKE * 1.4,
+			fill: '#111827',
+			stroke: '#ffffff',
+			strokeWidth: 2
+		};
+	}
+
+	function paint() {
+		const canvas = canvasEl;
+		if (!canvas) return;
+		// CSS size from reactive state, not layout reads: width tracks the
+		// wrapper, height is the user height or the data aspect.
+		const cssW = wrapperWidth;
+		const cssH = userHeight ?? (dimensions.W > 0 ? (cssW * dimensions.H) / dimensions.W : 0);
+		if (cssW <= 0 || cssH <= 0) return;
+		const devW = Math.max(1, Math.round(cssW * dpr));
+		const devH = Math.max(1, Math.round(cssH * dpr));
+		if (canvas.width !== devW) canvas.width = devW;
+		if (canvas.height !== devH) canvas.height = devH;
+		const view = computeViewTransform(viewport, dimensions, cssW, cssH, dpr);
+		if (!view) return;
+		const ctx = canvas.getContext('2d');
+		if (!ctx) return;
+		const marker = hoverMarkerOp();
+		renderScene(
+			ctx,
+			marker ? [...sceneOps, marker] : sceneOps,
+			view,
+			{ ground: groundTexture?.source, tile: tileImage?.source },
+			meshCache
+		);
+	}
+
+	// rAF-coalesced repaints. The effect only TOUCHES its dependencies;
+	// paint() re-reads the deriveds at rAF time ($derived laziness keeps
+	// them fresh, and reads outside the effect are untracked) — never
+	// snapshot here and hand to the frame, or a state change between
+	// effect-run and rAF would paint stale data while the coalescing flag
+	// suppresses the reschedule.
+	function scheduleRepaint() {
+		if (repaintFrame !== null) return;
+		repaintFrame = requestAnimationFrame(() => {
+			repaintFrame = null;
+			paint();
+		});
+	}
+
+	$effect(() => {
+		if (!useCanvas || !canvasEl) return;
+		/* eslint-disable @typescript-eslint/no-unused-expressions */
+		sceneOps;
+		hoverInfo;
+		viewport;
+		dimensions;
+		wrapperWidth;
+		userHeight;
+		groundTexture;
+		tileImage;
+		dpr;
+		/* eslint-enable @typescript-eslint/no-unused-expressions */
+		scheduleRepaint();
+	});
+	// ---------------------------------------------------------------------
+
 	function resetView(e?: Event) {
 		e?.stopPropagation();
 		viewport = defaultViewport(dimensions);
@@ -548,9 +691,9 @@
 	}
 
 	function onWheel(e: WheelEvent) {
-		if (!svgEl || !viewport) return;
+		if (!(canvasEl ?? svgEl) || !viewport) return;
 		e.preventDefault();
-		const rect = svgRect();
+		const rect = surfaceRect();
 		if (!rect || rect.width <= 0 || rect.height <= 0) return;
 		const relX = (e.clientX - rect.left) / rect.width;
 		const relY = (e.clientY - rect.top) / rect.height;
@@ -598,7 +741,7 @@
 	}
 
 	function onDocPointerMove(e: PointerEvent) {
-		if (!isDragging || !dragStart || !svgEl || !viewport) return;
+		if (!isDragging || !dragStart || !(canvasEl ?? svgEl) || !viewport) return;
 		const dx = e.clientX - dragStart.clientX;
 		const dy = e.clientY - dragStart.clientY;
 		if (!dragMoved && Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
@@ -612,7 +755,7 @@
 			pitch = Math.max(0, Math.min(PITCH_MAX, dragStart.pitch + dy * PITCH_PER_PX));
 			return;
 		}
-		const rect = svgRect();
+		const rect = surfaceRect();
 		if (!rect || rect.width <= 0) return;
 		const dxSvg = dx * (dragStart.vp.w / rect.width);
 		const dySvg = dy * (dragStart.vp.h / rect.height);
@@ -684,8 +827,8 @@
 
 	function onWrapperPointerMove(e: PointerEvent) {
 		if (isDragging) return;
-		if (!svgEl || !wrapperEl || !viewport || projectedPoints.length < 2) return;
-		const svgR = svgRect();
+		if (!(canvasEl ?? svgEl) || !wrapperEl || !viewport || projectedPoints.length < 2) return;
+		const svgR = surfaceRect();
 		const wrapR = wrapRect();
 		if (!svgR || !wrapR || svgR.width <= 0) return;
 		const relX = (e.clientX - svgR.left) / svgR.width;
@@ -748,6 +891,8 @@
 		// resize moves the cached rect; drop it so the next read is fresh.
 		window.addEventListener('scroll', invalidateRects, { capture: true, passive: true });
 		window.addEventListener('resize', invalidateRects, { passive: true });
+		dpr = window.devicePixelRatio;
+		armDprListener();
 	});
 
 	onDestroy(() => {
@@ -762,6 +907,8 @@
 		if (terrainHideTimer) clearTimeout(terrainHideTimer);
 		if (mapMenuHideTimer) clearTimeout(mapMenuHideTimer);
 		cancelToggleAnim();
+		if (repaintFrame !== null) cancelAnimationFrame(repaintFrame);
+		dprCleanup?.();
 		document.body.style.cursor = '';
 	});
 
@@ -778,6 +925,20 @@
 	onpointermove={onWrapperPointerMove}
 	onpointerleave={onWrapperPointerLeave}
 >
+	{#if useCanvas}
+		<!-- The canvas painter: one bitmap, repainted per frame from the scene
+		     ops (scene.ts order == the SVG template below). CSS aspect-ratio
+		     stands in for the SVG's viewBox-derived intrinsic aspect; the
+		     backing store is sized in paint() (CSS px × devicePixelRatio).
+		     Known accepted difference vs SVG: the canvas clips at its box
+		     (the SVG had overflow: visible bleed). -->
+		<canvas
+			bind:this={canvasEl}
+			class="block w-full"
+			class:h-full={!!userHeight}
+			style:aspect-ratio={userHeight ? undefined : `${dimensions.W} / ${dimensions.H}`}
+		></canvas>
+	{:else}
 	<svg
 		bind:this={svgEl}
 		xmlns="http://www.w3.org/2000/svg"
@@ -869,9 +1030,9 @@
 		<!-- No route shadow in terrain mode: the hillshaded mesh carries the
 		     depth cue, and a translucent shadow smeared over real relief
 		     reads as dirt rather than depth. -->
-		{#if shadowPoints && !terrainActive}
+		{#if shadowPoints.points && !terrainActive}
 			<polyline
-				points={shadowPoints}
+				points={shadowPoints.points}
 				fill="none"
 				stroke="#0f172a"
 				stroke-opacity="0.16"
@@ -1031,6 +1192,7 @@
 			/>
 		{/if}
 	</svg>
+	{/if}
 
 	<div
 		class="pointer-events-none absolute left-2 top-2 z-30 rounded-md bg-white/90 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-neutral-600 shadow-sm"
