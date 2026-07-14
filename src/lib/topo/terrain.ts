@@ -94,24 +94,26 @@ function cellTriangles(cellsX: number, cellsY: number, r: number, c: number): [P
 	];
 }
 
-// Static clip-path triangles in UV space, dilated about their centroids.
-// Index i corresponds 1:1 with buildTerrainMesh's transforms. `d` is the
-// SVG clip path; `verts` the same (dilated) triangle as numbers for the
-// canvas painter's clip.
-export type ClipTriangle = { d: string; verts: [P2, P2, P2] };
+// Static clip triangles in UV space, dilated about their centroids —
+// the canvas painter's clip regions. Index i corresponds 1:1 with
+// buildTerrainMesh's transforms.
+export type ClipTriangle = [P2, P2, P2];
 
-export function buildClipTriangles(cellsX: number, cellsY: number, dilate = TRI_DILATE): ClipTriangle[] {
+export function buildClipTriangles(
+	cellsX: number,
+	cellsY: number,
+	dilate = TRI_DILATE
+): ClipTriangle[] {
 	const out: ClipTriangle[] = [];
 	for (let r = 0; r < cellsY; r++) {
 		for (let c = 0; c < cellsX; c++) {
 			for (const tri of cellTriangles(cellsX, cellsY, r, c)) {
 				const cx = (tri[0][0] + tri[1][0] + tri[2][0]) / 3;
 				const cy = (tri[0][1] + tri[1][1] + tri[2][1]) / 3;
-				const pts = tri.map(([x, y]): P2 => [cx + (x - cx) * dilate, cy + (y - cy) * dilate]);
-				out.push({
-					d: `M ${pts[0][0].toFixed(6)} ${pts[0][1].toFixed(6)} L ${pts[1][0].toFixed(6)} ${pts[1][1].toFixed(6)} L ${pts[2][0].toFixed(6)} ${pts[2][1].toFixed(6)} Z`,
-					verts: [pts[0], pts[1], pts[2]]
-				});
+				const [p0, p1, p2] = tri.map(
+					([x, y]): P2 => [cx + (x - cx) * dilate, cy + (y - cy) * dilate]
+				);
+				out.push([p0, p1, p2]);
 			}
 		}
 	}
@@ -189,10 +191,9 @@ export function terrainDrawOrder(cellsX: number, cellsY: number, yaw: number): r
 }
 
 export type TerrainFace = {
-	points: string;
-	// The same polygon as numbers, for screen-space containment tests
-	// (the ghost pass needs to know which route points a front wall
-	// covers — the walls aren't terrain, so the visibility mask can't).
+	// Also used for screen-space containment tests (the ghost pass needs
+	// to know which route points a front wall covers — the walls aren't
+	// terrain, so the visibility mask can't).
 	verts: [number, number][];
 	depth: number;
 	isFront: boolean;
@@ -259,7 +260,6 @@ export function buildTerrainBlockFaces(
 
 	const out: TerrainFace[] = [];
 	for (const edge of edges) {
-		const pts: string[] = [];
 		const verts: [number, number][] = [];
 		let depthSum = 0;
 		let first: [number, number, number] | null = null;
@@ -269,7 +269,6 @@ export function buildTerrainBlockFaces(
 			if (i === 0) first = [lat, lon, e];
 			last = [lat, lon, e];
 			const [x, y, d] = project(lat, lon, e);
-			pts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
 			verts.push([x, y]);
 			depthSum += d;
 		}
@@ -277,8 +276,6 @@ export function buildTerrainBlockFaces(
 		// the first.
 		const [lx, ly, ld] = project(last![0], last![1], base);
 		const [fx, fy, fd] = project(first![0], first![1], base);
-		pts.push(`${lx.toFixed(1)},${ly.toFixed(1)}`);
-		pts.push(`${fx.toFixed(1)},${fy.toFixed(1)}`);
 		verts.push([lx, ly], [fx, fy]);
 		depthSum += ld + fd;
 
@@ -294,7 +291,6 @@ export function buildTerrainBlockFaces(
 			midEle
 		);
 		out.push({
-			points: pts.join(' '),
 			verts,
 			depth: depthSum / (edge.count + 2),
 			isFront: d1 > d0

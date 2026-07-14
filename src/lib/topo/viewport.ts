@@ -1,6 +1,6 @@
 // Viewport math for the segment topo view's pan/zoom interaction.
 //
-// The viewport is the rectangle in viewBox space the SVG is currently
+// The viewport is the rectangle in viewBox space the painter is currently
 // showing. At rest it equals the canvas dimensions; pan moves it around;
 // wheel-zoom shrinks or enlarges it around the cursor. Clamping keeps the
 // viewport within a margin around the canvas so rotated/tilted geometry
@@ -107,21 +107,12 @@ export function isZoomedOrPanned(
 	);
 }
 
-// Format a viewport (or fall back to the natural canvas dimensions) as the
-// `viewBox` attribute string SVG expects: `"x y w h"`.
-export function formatViewBox(
-	viewport: Viewport | null,
-	dimensions: Dimensions
-): string {
-	if (!viewport) return `0 0 ${dimensions.W} ${dimensions.H}`;
-	return `${viewport.x} ${viewport.y} ${viewport.w} ${viewport.h}`;
-}
-
-// The canvas painter's equivalent of `viewBox` + preserveAspectRatio
-// "xMidYMid meet": a uniform scale k and translation mapping viewBox
-// coordinates to device pixels on a cssW×cssH canvas at the given
-// devicePixelRatio. Null viewport falls back to the natural canvas (like
-// formatViewBox); degenerate sizes return null (skip the paint).
+// The painter's view transform — what SVG's `viewBox` +
+// preserveAspectRatio "xMidYMid meet" did: a uniform scale k and
+// translation mapping viewBox coordinates to device pixels on a
+// cssW×cssH canvas at the given devicePixelRatio. Null viewport falls
+// back to the natural canvas; degenerate sizes return null (skip the
+// paint).
 export type ViewTransform = { k: number; tx: number; ty: number };
 
 export function computeViewTransform(

@@ -5,8 +5,7 @@ import type {
 	BoundaryAnchor,
 	DrapeColored,
 	HoverHighlight,
-	PolylineRun,
-	ShadowPoints
+	PolylineRun
 } from './geometry.js';
 import { buildScene, type SceneInputs, type SceneOp } from './scene.js';
 import type { ClipTriangle, TerrainFace, TriTransform } from './terrain.js';
@@ -17,33 +16,28 @@ const P = (x: number, y: number): [number, number] => [x, y];
 const IDENT: TriTransform = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
 
 const clipTriangles: ClipTriangle[] = [
-	{ d: 'M 0 0 L 1 0 L 0 1 Z', verts: [P(0, 0), P(1, 0), P(0, 1)] },
-	{ d: 'M 1 0 L 1 1 L 0 1 Z', verts: [P(1, 0), P(1, 1), P(0, 1)] }
+	[P(0, 0), P(1, 0), P(0, 1)],
+	[P(1, 0), P(1, 1), P(0, 1)]
 ];
 const terrainMesh: (TriTransform | null)[] = [IDENT, IDENT];
 const terrainOrder = [0, 1];
 
 const face = (isFront: boolean, depth: number): TerrainFace => ({
-	points: '0,0 1,0 1,1',
 	verts: [P(0, 0), P(1, 0), P(1, 1)],
 	depth,
 	isFront
 });
 const terrainFaces: TerrainFace[] = [face(false, 0), face(false, 1), face(true, 2), face(true, 3)];
 
-const blockFaces: BlockFace[] = [
-	{ points: '0,0 1,0 1,1 0,1', verts: [P(0, 0), P(1, 0), P(1, 1), P(0, 1)], depth: 0 }
-];
+const blockFaces: BlockFace[] = [{ verts: [P(0, 0), P(1, 0), P(1, 1), P(0, 1)], depth: 0 }];
 
 const run = (color: string): PolylineRun => ({
-	points: '0,0 10,10',
 	pts: [P(0, 0), P(10, 10)],
 	color,
 	depth: 0
 });
 
-const shadow: ShadowPoints = { points: '0,0 10,10', pts: [P(0, 0), P(10, 10)] };
-const emptyShadow: ShadowPoints = { points: '', pts: [] };
+const shadow = [P(0, 0), P(10, 10)];
 
 const quad: [ReturnType<typeof P>, ReturnType<typeof P>, ReturnType<typeof P>, ReturnType<typeof P>] = [
 	P(0, 0),
@@ -52,18 +46,16 @@ const quad: [ReturnType<typeof P>, ReturnType<typeof P>, ReturnType<typeof P>, R
 	P(0, 1)
 ];
 const drapes: DrapeColored[] = [
-	{ drape: 'M...Z', quads: [quad], color: '#e00' },
-	{ drape: 'M...Z', quads: [quad], color: '#0e0' }
+	{ quads: [quad], color: '#e00' },
+	{ quads: [quad], color: '#0e0' }
 ];
 
 const hover: HoverHighlight = {
-	polyline: '0,0 10,10',
 	topPts: [P(0, 0), P(10, 10)],
-	drape: 'M...Z',
 	quads: [quad],
 	color: '#abc'
 };
-const emptyHover: HoverHighlight = { polyline: '', topPts: [], drape: '', quads: [], color: '' };
+const emptyHover: HoverHighlight = { topPts: [], quads: [], color: '' };
 
 const anchorLines: AnchorLine[] = [{ x1: 0, y1: 0, x2: 0, y2: 5 }];
 const boundaryAnchors: BoundaryAnchor[] = [{ x1: 1, y1: 0, x2: 1, y2: 5, color: '#f00' }];
@@ -144,7 +136,7 @@ describe('buildScene — flat mode', () => {
 	});
 
 	it('no shadow op when the shadow is empty', () => {
-		const ops = buildScene({ ...baseInputs, shadow: emptyShadow });
+		const ops = buildScene({ ...baseInputs, shadow: [] });
 		expect(ops.some((o) => o.kind === 'polyline' && o.opacity === 0.16)).toBe(false);
 	});
 });
@@ -271,7 +263,7 @@ describe('buildScene — empty inputs', () => {
 		const ops = buildScene({
 			...baseInputs,
 			showMap: false,
-			shadow: emptyShadow,
+			shadow: [],
 			anchorLines: [],
 			boundaryAnchors: [],
 			polylines: [],

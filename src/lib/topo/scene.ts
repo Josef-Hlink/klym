@@ -3,8 +3,8 @@
 // `buildScene` turns the component's derived geometry (the outputs of the
 // builders in geometry.ts / terrain.ts — it never calls a builder itself,
 // so each derived keeps its own recompute cadence) into a flat, ordered
-// list of draw ops. The op order IS the SVG template's paint order,
-// including the occlusion interleave the whole view depends on:
+// list of draw ops. The op order IS the paint order, including the
+// occlusion interleave the whole view depends on:
 //
 //   ground (back faces → mesh | flat faces → tile) → shadow → drapes →
 //   anchors → SOLID route runs → hover halo → endpoint dots →
@@ -23,7 +23,6 @@ import type {
 	DrapeColored,
 	HoverHighlight,
 	PolylineRun,
-	ShadowPoints,
 	TileTransform
 } from './geometry.js';
 import type { Projected } from './projection.js';
@@ -58,7 +57,7 @@ export type SceneOp =
 	| {
 			// One drape = one op = one fill: the quads are subpaths of a single
 			// nonzero fill, so overlapping quads (switchbacks) don't accumulate
-			// alpha — same as the single SVG <path>.
+			// alpha.
 			kind: 'quads';
 			quads: readonly (readonly [Pt, Pt, Pt, Pt])[];
 			color: string;
@@ -98,7 +97,7 @@ export type SceneInputs = {
 	terrainFaces: readonly TerrainFace[];
 	blockFaces: readonly BlockFace[];
 	// Route + furniture
-	shadow: ShadowPoints;
+	shadow: readonly Pt[];
 	allDrapes: readonly DrapeColored[];
 	externalHover: HoverHighlight;
 	showAnchorLines: boolean;
@@ -128,7 +127,7 @@ export function buildScene(s: SceneInputs): SceneOp[] {
 	if (s.terrainActive && s.hasGroundTexture) {
 		// Back faces before the mesh, so a far valley can't bleed through the
 		// near silhouette. Per-face opacity (they sit outside the mesh's
-		// group-opacity layer in the SVG template too).
+		// group-opacity layer).
 		for (const face of s.terrainFaces) {
 			if (!face.isFront) out.push(facePolygon(face, s.terrainOpacity));
 		}
@@ -151,10 +150,10 @@ export function buildScene(s: SceneInputs): SceneOp[] {
 
 	// Route shadow — flat mode only; the hillshaded mesh carries the depth
 	// cue in terrain mode.
-	if (s.shadow.pts.length >= 2 && !s.terrainActive) {
+	if (s.shadow.length >= 2 && !s.terrainActive) {
 		out.push({
 			kind: 'polyline',
-			pts: s.shadow.pts,
+			pts: s.shadow,
 			color: '#0f172a',
 			width: s.stroke * 1.6,
 			opacity: 0.16

@@ -71,17 +71,16 @@ function drawMeshLayer(
 		ctx.save();
 		// Path points are captured under the CTM at construction, so building
 		// the clip AFTER the UV→screen transform specifies it in UV space —
-		// the canvas equivalent of clip-path composing with the group matrix.
+		// the clip composes with the transform like SVG's clip-path did.
 		ctx.transform(m.a, m.b, m.c, m.d, m.e, m.f);
-		const [p0, p1, p2] = clip.verts;
+		const [p0, p1, p2] = clip;
 		ctx.beginPath();
 		ctx.moveTo(p0[0], p0[1]);
 		ctx.lineTo(p1[0], p1[1]);
 		ctx.lineTo(p2[0], p2[1]);
 		ctx.closePath();
 		ctx.clip();
-		// The texture mapped onto the UV unit square, like the SVG's
-		// <image width=1 height=1 preserveAspectRatio=none>.
+		// The whole texture mapped onto the UV unit square.
 		ctx.drawImage(image, 0, 0, 1, 1);
 		ctx.restore();
 	}
@@ -157,8 +156,7 @@ export function renderScene(
 			}
 			case 'quads': {
 				// All quads as subpaths of ONE nonzero fill — overlap between
-				// quads (switchbacks) must not accumulate alpha, same as the
-				// single SVG <path>.
+				// quads (switchbacks) must not accumulate alpha.
 				ctx.globalAlpha = op.opacity;
 				ctx.beginPath();
 				for (const q of op.quads) {

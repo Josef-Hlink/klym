@@ -53,18 +53,14 @@ export async function buildVectorTileImage(bbox: TileBBox): Promise<TileImage | 
 		// still alive — after map.remove() the WebGL canvas is not a safe
 		// drawImage source.
 		const gl = map.getCanvas();
-		let source: CanvasImageSource | undefined;
 		const copy = document.createElement('canvas');
 		copy.width = gl.width;
 		copy.height = gl.height;
 		const cctx = copy.getContext('2d');
-		if (cctx) {
-			cctx.drawImage(gl, 0, 0);
-			source = copy;
-		}
+		if (!cctx) return null;
+		cctx.drawImage(gl, 0, 0);
 		return {
-			url: gl.toDataURL('image/png'),
-			source,
+			source: copy,
 			minLat: bbox.minLat,
 			maxLat: bbox.maxLat,
 			minLon: bbox.minLon,

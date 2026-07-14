@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { page } from '$app/state';
 	import { findPointAtDistance, gradeColor, type ColorTheme, type GradeBin } from '$lib/elevation.js';
 	import { fmtKm, fmtM } from '$lib/format.js';
 	import {
@@ -53,7 +52,6 @@
 		clampViewport,
 		computeViewTransform,
 		defaultViewport,
-		formatViewBox,
 		isZoomedOrPanned,
 		type Viewport
 	} from '$lib/topo/viewport.js';
@@ -78,19 +76,6 @@
 		externalHoverDistM = null
 	}: Props = $props();
 
-	// Unique per component instance — prefixes the terrain defs ids so two
-	// SegmentMaps on one page can't collide. (SVG fallback only; the canvas
-	// painter has no ids.)
-	const uid = $props.id();
-
-	// Painter selection: canvas by default. `?painter=svg` keeps the legacy
-	// SVG template alive for A/B parity checks — same geometry, different
-	// executor. The canvas painter exists because the per-frame SVG DOM
-	// mutations (~3700 nodes, 912 clip paths) both invited extension
-	// cosmetic-filter style-recalc storms (AdBlock made prod unusable) and
-	// cost real time on large segments; canvas repaints are pixels the DOM
-	// never sees.
-	const useCanvas = $derived(page.url.searchParams.get('painter') !== 'svg');
 
 	const STROKE = 6;
 	const DRAG_THRESHOLD_PX = 4;
@@ -107,7 +92,6 @@
 	const PITCH_MAX = Math.PI / 2 - 0.05;
 
 	let wrapperEl: HTMLDivElement | null = $state(null);
-	let svgEl: SVGSVGElement | null = $state(null);
 	let canvasEl: HTMLCanvasElement | null = $state(null);
 
 	let yaw = $state(0);
@@ -170,11 +154,10 @@
 	let userHeight = $state<number | null>(null);
 	let wrapperWidth = $state(0);
 
-	// Cached on-screen rects for the paint surface (canvas or SVG) and the
-	// wrapper. getBoundingClientRect forces a synchronous style/layout flush;
-	// calling it on every pointermove reflowed the entire (huge) topo DOM per
-	// event — profiled at ~19s of "Recalculate style" while map tiles were
-	// still streaming in and keeping layout dirty. The on-screen rect only
+	// Cached on-screen rects for the canvas and the wrapper.
+	// getBoundingClientRect forces a synchronous style/layout flush; calling
+	// it per pointermove is the classic layout-thrash trap (profiled at ~19s
+	// of "Recalculate style" in the SVG-painter era). The on-screen rect only
 	// changes on scroll / resize / relayout, never between two moves, so
 	// cache it and invalidate on those.
 	let cachedSurfaceRect: DOMRect | null = null;
@@ -184,9 +167,8 @@
 		cachedWrapRect = null;
 	}
 	function surfaceRect(): DOMRect | null {
-		const el = canvasEl ?? svgEl;
-		if (!el) return null;
-		return (cachedSurfaceRect ??= el.getBoundingClientRect());
+		if (!canvasEl) return null;
+		return (cachedSurfaceRect ??= canvasEl.getBoundingClientRect());
 	}
 	function wrapRect(): DOMRect | null {
 		if (!wrapperEl) return null;
@@ -389,21 +371,14 @@
 		terrainOn && showMap && !!demGrid && !!tileImage && sameBBox(demGrid.bbox, tileImage)
 	);
 
-	// Hillshade-baked ground texture (async, cosmetic); raw texture until
-	// the bake resolves.
-	let terrainTexture = $state<TileImage | null>(null);
-	$effect(() => {
-		terrainTexture = null;
-		if (!terrainOn || !tileImage || !demGrid || !sameBBox(demGrid.bbox, tileImage)) return;
-		let cancelled = false;
-		bakeHillshade(tileImage, demGrid).then((t) => {
-			if (!cancelled) terrainTexture = t;
-		});
-		return () => {
-			cancelled = true;
-		};
+	// Hillshade-baked ground texture (cosmetic; sync — the texture is
+	// already a canvas). Once per texture/grid pair.
+	const groundTexture = $derived.by(() => {
+		if (terrainOn && tileImage && demGrid && sameBBox(demGrid.bbox, tileImage)) {
+			return bakeHillshade(tileImage, demGrid);
+		}
+		return tileImage;
 	});
-	const groundTexture = $derived(terrainTexture ?? tileImage);
 
 	// Route points re-based onto the terrain surface + float offset. GPS
 	// elevations stay the source of truth for stats and the hover tooltip;
@@ -555,8 +530,6 @@
 	const isRotated = $derived(yaw !== 0 || pitch !== 0);
 	const isViewModified = $derived(isZoomed || isRotated);
 
-	const viewBoxAttr = $derived(formatViewBox(viewport, dimensions));
-
 	// ---- Canvas painter -------------------------------------------------
 	// The scene is the SVG template's paint order reified as data
 	// (scene.ts, tested); renderScene (paint.ts) executes it. buildScene
@@ -667,7 +640,7 @@
 	}
 
 	$effect(() => {
-		if (!useCanvas || !canvasEl) return;
+		if (!canvasEl) return;
 		/* eslint-disable @typescript-eslint/no-unused-expressions */
 		sceneOps;
 		hoverInfo;
@@ -691,7 +664,7 @@
 	}
 
 	function onWheel(e: WheelEvent) {
-		if (!(canvasEl ?? svgEl) || !viewport) return;
+		if (!canvasEl || !viewport) return;
 		e.preventDefault();
 		const rect = surfaceRect();
 		if (!rect || rect.width <= 0 || rect.height <= 0) return;
@@ -741,7 +714,7 @@
 	}
 
 	function onDocPointerMove(e: PointerEvent) {
-		if (!isDragging || !dragStart || !(canvasEl ?? svgEl) || !viewport) return;
+		if (!isDragging || !dragStart || !canvasEl || !viewport) return;
 		const dx = e.clientX - dragStart.clientX;
 		const dy = e.clientY - dragStart.clientY;
 		if (!dragMoved && Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
@@ -827,7 +800,7 @@
 
 	function onWrapperPointerMove(e: PointerEvent) {
 		if (isDragging) return;
-		if (!(canvasEl ?? svgEl) || !wrapperEl || !viewport || projectedPoints.length < 2) return;
+		if (!canvasEl || !wrapperEl || !viewport || projectedPoints.length < 2) return;
 		const svgR = surfaceRect();
 		const wrapR = wrapRect();
 		if (!svgR || !wrapR || svgR.width <= 0) return;
@@ -925,274 +898,16 @@
 	onpointermove={onWrapperPointerMove}
 	onpointerleave={onWrapperPointerLeave}
 >
-	{#if useCanvas}
-		<!-- The canvas painter: one bitmap, repainted per frame from the scene
-		     ops (scene.ts order == the SVG template below). CSS aspect-ratio
-		     stands in for the SVG's viewBox-derived intrinsic aspect; the
-		     backing store is sized in paint() (CSS px × devicePixelRatio).
-		     Known accepted difference vs SVG: the canvas clips at its box
-		     (the SVG had overflow: visible bleed). -->
-		<canvas
-			bind:this={canvasEl}
-			class="block w-full"
-			class:h-full={!!userHeight}
-			style:aspect-ratio={userHeight ? undefined : `${dimensions.W} / ${dimensions.H}`}
-		></canvas>
-	{:else}
-	<svg
-		bind:this={svgEl}
-		xmlns="http://www.w3.org/2000/svg"
-		viewBox={viewBoxAttr}
+	<!-- The painter: one bitmap, repainted per frame from the scene ops
+	     (paint order lives in scene.ts, locked by its tests). CSS
+	     aspect-ratio gives the element its data-derived intrinsic aspect;
+	     the backing store is sized in paint() (CSS px × devicePixelRatio). -->
+	<canvas
+		bind:this={canvasEl}
 		class="block w-full"
-		class:h-auto={!userHeight}
 		class:h-full={!!userHeight}
-		preserveAspectRatio="xMidYMid meet"
-		style:overflow="visible"
-	>
-		{#if terrainActive && groundTexture}
-			<!-- Terrain ground: the texture clipped per triangle in UV space and
-			     warped by per-frame affines. The clip paths are static per grid;
-			     each frame only the matrix strings change, and the keyed each
-			     reorders DOM only when yaw crosses a quadrant. Back block faces
-			     draw before the mesh, front faces after it, so far valleys can't
-			     bleed through the near silhouette. tileFadeOpacity deliberately
-			     doesn't apply — edge-on is the terrain payoff. -->
-			<defs>
-				<image
-					id="tex-{uid}"
-					href={groundTexture.url}
-					width="1"
-					height="1"
-					preserveAspectRatio="none"
-				/>
-				{#each clipTriangles as tri, i (i)}
-					<clipPath id="tri-{uid}-{i}" clipPathUnits="userSpaceOnUse">
-						<path d={tri.d} />
-					</clipPath>
-				{/each}
-			</defs>
-			{#each terrainFaces.filter((f) => !f.isFront) as face, i (i)}
-				<polygon
-					points={face.points}
-					fill="#f0e6d6"
-					stroke="#d4c5ad"
-					stroke-width="1"
-					stroke-linejoin="round"
-					opacity={terrainOpacity}
-					pointer-events="none"
-				/>
-			{/each}
-			<g opacity={terrainOpacity} pointer-events="none">
-				{#each terrainOrder as i (i)}
-					{#if terrainMesh[i]}
-						{@const m = terrainMesh[i]}
-						<g
-							transform="matrix({m.a} {m.b} {m.c} {m.d} {m.e} {m.f})"
-							clip-path="url(#tri-{uid}-{i})"
-						>
-							<use href="#tex-{uid}" />
-						</g>
-					{/if}
-				{/each}
-			</g>
-			<!-- Front block faces draw AFTER the route (below, past the dots):
-			     the block is solid earth, so a route stretch whose screen
-			     position falls on a side wall must be swallowed by it instead
-			     of floating on blank cardboard. -->
-		{:else}
-			{#if showMap && blockFaces.length > 0 && tileOpacity > 0.01}
-				{#each blockFaces as face, i (i)}
-					<polygon
-						points={face.points}
-						fill="#f0e6d6"
-						stroke="#d4c5ad"
-						stroke-width="1"
-						stroke-linejoin="round"
-						opacity={tileOpacity}
-						pointer-events="none"
-					/>
-				{/each}
-			{/if}
-
-			{#if showMap && tileImage && tileTransform && tileOpacity > 0.01}
-				<image
-					href={tileImage.url}
-					width="1"
-					height="1"
-					preserveAspectRatio="none"
-					transform="matrix({tileTransform.a} {tileTransform.b} {tileTransform.c} {tileTransform.d} {tileTransform.e} {tileTransform.f})"
-					opacity={tileOpacity}
-					pointer-events="none"
-				/>
-			{/if}
-		{/if}
-
-		<!-- No route shadow in terrain mode: the hillshaded mesh carries the
-		     depth cue, and a translucent shadow smeared over real relief
-		     reads as dirt rather than depth. -->
-		{#if shadowPoints.points && !terrainActive}
-			<polyline
-				points={shadowPoints.points}
-				fill="none"
-				stroke="#0f172a"
-				stroke-opacity="0.16"
-				stroke-width={STROKE * 1.6}
-				stroke-linecap="round"
-				stroke-linejoin="round"
-				pointer-events="none"
-			/>
-		{/if}
-
-		{#each allDrapes as d, i (i)}
-			<path
-				d={d.drape}
-				fill={d.color}
-				fill-opacity="0.22"
-				stroke="none"
-				pointer-events="none"
-			/>
-		{/each}
-
-		{#if externalHoverHighlight.drape}
-			<path
-				d={externalHoverHighlight.drape}
-				fill={externalHoverHighlight.color}
-				fill-opacity="0.3"
-				stroke="none"
-				pointer-events="none"
-			/>
-		{/if}
-
-		{#if showAnchorLines}
-			{#each anchorLines as anchor, i (i)}
-				<line
-					x1={anchor.x1}
-					y1={anchor.y1}
-					x2={anchor.x2}
-					y2={anchor.y2}
-					stroke="#0f172a"
-					stroke-opacity="0.12"
-					stroke-width="1.5"
-					stroke-dasharray="3 4"
-					stroke-linecap="round"
-					pointer-events="none"
-				/>
-			{/each}
-
-			{#each boundaryAnchors as anchor, i (i)}
-				<line
-					x1={anchor.x1}
-					y1={anchor.y1}
-					x2={anchor.x2}
-					y2={anchor.y2}
-					stroke={anchor.color}
-					stroke-opacity="0.65"
-					stroke-width="2.5"
-					stroke-dasharray="5 5"
-					stroke-linecap="round"
-					pointer-events="none"
-				/>
-			{/each}
-		{/if}
-
-		{#each polylines as line, i (i)}
-			<polyline
-				points={line.points}
-				fill="none"
-				stroke={line.color}
-				stroke-width={STROKE}
-				stroke-linecap="round"
-				stroke-linejoin="round"
-			/>
-		{/each}
-
-		{#if externalHoverHighlight.polyline}
-			<polyline
-				points={externalHoverHighlight.polyline}
-				fill="none"
-				stroke="#ffffff"
-				stroke-opacity="0.55"
-				stroke-width={STROKE * 2.2}
-				stroke-linecap="round"
-				stroke-linejoin="round"
-				pointer-events="none"
-			/>
-		{/if}
-
-		{#if startEnd}
-			{#if startEnd.a}
-				<circle
-					cx={startEnd.a[0]}
-					cy={startEnd.a[1]}
-					r={STROKE * 1.6}
-					fill="#10b981"
-					stroke="#ffffff"
-					stroke-width="3"
-				/>
-			{/if}
-			{#if startEnd.b}
-				<circle
-					cx={startEnd.b[0]}
-					cy={startEnd.b[1]}
-					r={STROKE * 1.6}
-					fill="#dc2626"
-					stroke="#ffffff"
-					stroke-width="3"
-				/>
-			{/if}
-		{/if}
-
-		{#if terrainActive}
-			<!-- Front block faces, deliberately AFTER the route and dots: the
-			     earth block is solid, so route stretches whose screen position
-			     falls on a side wall are swallowed by it — the visibility mask
-			     only knows about the DEM surface, not the fictional walls. -->
-			{#each terrainFaces.filter((f) => f.isFront) as face, i (i)}
-				<polygon
-					points={face.points}
-					fill="#f0e6d6"
-					stroke="#d4c5ad"
-					stroke-width="1"
-					stroke-linejoin="round"
-					opacity={terrainOpacity}
-					pointer-events="none"
-				/>
-			{/each}
-		{/if}
-
-		<!-- Ghost above the walls AND the mesh: everything the viewer can't
-		     see solid (behind terrain or behind a wall) stays traceable.
-		     Only the hover marker sits higher. -->
-		{#each ghostPolylines as line, i (i)}
-			<polyline
-				points={line.points}
-				fill="none"
-				stroke={line.color}
-				stroke-opacity="0.22"
-				stroke-width={STROKE}
-				stroke-linecap="round"
-				stroke-linejoin="round"
-				pointer-events="none"
-			/>
-		{/each}
-
-		{#if hoverInfo}
-			<!-- renderFull, not points: the dot must ride the terrain-displaced
-			     route. The tooltip below keeps GPS elevation from `points`. -->
-			{@const ip = findPointAtDistance(renderFull, hoverInfo.distM)}
-			{@const [hx, hy] = project(ip.lat, ip.lon, ip.ele)}
-			<circle
-				cx={hx}
-				cy={hy}
-				r={STROKE * 1.4}
-				fill="#111827"
-				stroke="#ffffff"
-				stroke-width="2"
-				pointer-events="none"
-			/>
-		{/if}
-	</svg>
-	{/if}
+		style:aspect-ratio={userHeight ? undefined : `${dimensions.W} / ${dimensions.H}`}
+	></canvas>
 
 	<div
 		class="pointer-events-none absolute left-2 top-2 z-30 rounded-md bg-white/90 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-neutral-600 shadow-sm"

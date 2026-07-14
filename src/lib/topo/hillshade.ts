@@ -4,30 +4,24 @@
 // pair — the shading is world-fixed (NW sun), so it rotates with the map
 // like a real cartographic hillshade and costs nothing per frame.
 //
-// DOM-touching (canvas + Image); lives outside dem.ts so buildDemGrid stays
-// that module's only DOM function. Purely cosmetic: resolves to the
-// original texture on any failure.
+// DOM-touching (canvas); lives outside dem.ts so buildDemGrid stays that
+// module's only DOM function. Purely cosmetic: returns the original
+// texture on any failure. Synchronous — the input texture is already a
+// canvas, so there's nothing to decode.
 
 import { computeShade, type DemGrid } from './dem.js';
 import type { TileImage } from './tiles.js';
 
 export const SHADE_ALPHA = 0.35;
 
-export async function bakeHillshade(texture: TileImage, grid: DemGrid): Promise<TileImage> {
+export function bakeHillshade(texture: TileImage, grid: DemGrid): TileImage {
 	try {
-		const img = new Image();
-		await new Promise<void>((resolve, reject) => {
-			img.onload = () => resolve();
-			img.onerror = () => reject(new Error('texture load failed'));
-			img.src = texture.url; // data URL — same-origin, decodes locally
-		});
-
 		const canvas = document.createElement('canvas');
-		canvas.width = img.naturalWidth;
-		canvas.height = img.naturalHeight;
+		canvas.width = texture.source.width;
+		canvas.height = texture.source.height;
 		const ctx = canvas.getContext('2d');
 		if (!ctx) return texture;
-		ctx.drawImage(img, 0, 0);
+		ctx.drawImage(texture.source, 0, 0);
 
 		// Greyscale shade at cell resolution; the smoothed upscale below turns
 		// per-cell values into a soft gradient across the full texture.
@@ -57,7 +51,7 @@ export async function bakeHillshade(texture: TileImage, grid: DemGrid): Promise<
 		ctx.globalCompositeOperation = 'source-over';
 		ctx.globalAlpha = 1;
 
-		return { ...texture, url: canvas.toDataURL('image/png'), source: canvas };
+		return { ...texture, source: canvas };
 	} catch {
 		return texture;
 	}

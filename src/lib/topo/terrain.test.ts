@@ -89,41 +89,18 @@ describe('buildClipTriangles', () => {
 	});
 
 	it('dilates each triangle about its centroid', () => {
-		const raw = buildClipTriangles(2, 2, 1);
-		const dilated = buildClipTriangles(2, 2, TRI_DILATE);
-		const parse = (d: string) =>
-			d
-				.replace(/[MLZ]/g, '')
-				.trim()
-				.split(/\s+/)
-				.map(Number);
-		const p0 = parse(raw[0].d);
-		const p1 = parse(dilated[0].d);
-		const cx = (p0[0] + p0[2] + p0[4]) / 3;
-		const cy = (p0[1] + p0[3] + p0[5]) / 3;
+		const [raw] = buildClipTriangles(2, 2, 1);
+		const [dilated] = buildClipTriangles(2, 2, TRI_DILATE);
+		const cx = (raw[0][0] + raw[1][0] + raw[2][0]) / 3;
+		const cy = (raw[0][1] + raw[1][1] + raw[2][1]) / 3;
 		// Same centroid, every vertex strictly farther from it.
-		expect((p1[0] + p1[2] + p1[4]) / 3).toBeCloseTo(cx, 5);
-		expect((p1[1] + p1[3] + p1[5]) / 3).toBeCloseTo(cy, 5);
+		expect((dilated[0][0] + dilated[1][0] + dilated[2][0]) / 3).toBeCloseTo(cx, 5);
+		expect((dilated[0][1] + dilated[1][1] + dilated[2][1]) / 3).toBeCloseTo(cy, 5);
 		for (let i = 0; i < 3; i++) {
-			const d0 = Math.hypot(p0[i * 2] - cx, p0[i * 2 + 1] - cy);
-			const d1 = Math.hypot(p1[i * 2] - cx, p1[i * 2 + 1] - cy);
+			const d0 = Math.hypot(raw[i][0] - cx, raw[i][1] - cy);
+			const d1 = Math.hypot(dilated[i][0] - cx, dilated[i][1] - cy);
 			expect(d1).toBeGreaterThan(d0);
 			expect(d1 / d0).toBeCloseTo(TRI_DILATE, 3);
-		}
-	});
-
-	it('numeric verts mirror the path string (same dilated triangle)', () => {
-		for (const tri of buildClipTriangles(3, 2)) {
-			const nums = tri.d
-				.replace(/[MLZ]/g, '')
-				.trim()
-				.split(/\s+/)
-				.map(Number);
-			expect(tri.verts).toHaveLength(3);
-			tri.verts.forEach(([x, y], i) => {
-				expect(x).toBeCloseTo(nums[i * 2], 5);
-				expect(y).toBeCloseTo(nums[i * 2 + 1], 5);
-			});
 		}
 	});
 });
@@ -226,40 +203,28 @@ describe('buildTerrainBlockFaces', () => {
 		const faces = buildTerrainBlockFaces(grid, refFrame, neFar, 100);
 		expect(faces.filter((f) => !f.isFront).length).toBe(2);
 		expect(faces.filter((f) => f.isFront).length).toBe(2);
-		// Flip the projector → every classification flips.
+		// Flip the projector → every classification flips. Match faces
+		// across the two runs by their identical vertex polygons.
 		const swFar: Projector = (lat, lon, ele) => [lon, ele, lat + lon] as Projected;
 		const flipped = buildTerrainBlockFaces(grid, refFrame, swFar, 100);
+		const key = (f: { verts: [number, number][] }) => JSON.stringify(f.verts);
 		for (let i = 0; i < 4; i++) {
-			const match = flipped.find((f) => f.points === faces[i].points)!;
+			const match = flipped.find((f) => key(f) === key(faces[i]))!;
 			expect(match.isFront).toBe(!faces[i].isFront);
 		}
 	});
 
 	it('drops the base below both the grid and the route minimum', () => {
 		// Identity projector: y = -lat unaffected by ele; use a projector that
-		// exposes ele as y so we can read the base back out of the points.
+		// exposes ele as y so we can read the base back out of the verts.
 		const eleAsY: Projector = (lat, lon, ele) => [lon, ele, -lat] as Projected;
 		const faces = buildTerrainBlockFaces(grid, refFrame, eleAsY, 100);
 		const expectedBase = Math.min(grid.minEle, refFrame.minEle) - 100;
 		// grid.minEle = 400 < refFrame.minEle = 500 → base = 300.
 		expect(expectedBase).toBe(300);
 		for (const face of faces) {
-			const ys = face.points.split(' ').map((p) => Number(p.split(',')[1]));
+			const ys = face.verts.map(([, y]) => y);
 			expect(Math.min(...ys)).toBeCloseTo(expectedBase, 1);
-		}
-	});
-
-	it('verts carries the same polygon as the points string', () => {
-		const eleAsY: Projector = (lat, lon, ele) => [lon, ele, -lat] as Projected;
-		const faces = buildTerrainBlockFaces(grid, refFrame, eleAsY, 100);
-		for (const face of faces) {
-			const tokens = face.points.split(' ');
-			expect(face.verts.length).toBe(tokens.length);
-			for (let i = 0; i < tokens.length; i++) {
-				const [x, y] = tokens[i].split(',').map(Number);
-				expect(face.verts[i][0]).toBeCloseTo(x, 1);
-				expect(face.verts[i][1]).toBeCloseTo(y, 1);
-			}
 		}
 	});
 });

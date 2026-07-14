@@ -74,12 +74,11 @@ export type TileBBox = {
 	maxLon: number;
 };
 
+// The ground texture: the compositing canvas itself. The painter
+// drawImages it directly — synchronous, no data-URL serialize/decode
+// round-trip.
 export type TileImage = TileBBox & {
-	url: string;
-	// The compositing canvas the data URL was serialized from, when the
-	// producer has one. The canvas painter draws this directly (synchronous,
-	// no decode); the SVG template keeps using `url`.
-	source?: CanvasImageSource;
+	source: HTMLCanvasElement;
 };
 
 // Standard slippy-tile <-> lat/lon math.
@@ -289,7 +288,6 @@ export async function buildTileImage(
 	cctx.drawImage(canvas, cropX0, cropY0, cw, ch, 0, 0, cw, ch);
 
 	return {
-		url: cropped.toDataURL('image/png'),
 		source: cropped,
 		minLon: bbox.minLon,
 		maxLon: bbox.maxLon,

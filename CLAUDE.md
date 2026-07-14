@@ -281,22 +281,21 @@ hover, tile fetch); all the math lives under `src/lib/topo/`
 tests). **See `src/lib/topo/CLAUDE.md` for the module map and in-dir
 conventions.**
 
-The painter is a single `<canvas>` 2D renderer by default: `scene.ts`
-reifies the paint order as a tested op list from the derived geometry,
-`paint.ts` executes it with the view transform baked into the CTM
-(stroke widths/dashes stay in viewBox units, like SVG), and the terrain
-mesh draws on an offscreen layer composited at the terrain opacity
-(group-opacity semantics + a hover-repaint cache). Per-frame updates
-are pixel writes — no DOM mutations, so browser-extension cosmetic
-filtering (AdBlock's injected CSS made the SVG version unusable in
-prod) has nothing to re-match, and large segments stay smooth. The
-pre-existing SVG template remains as a fallback behind `?painter=svg`
-for A/B parity checks; geometry builders emit both SVG strings and
-numeric siblings (`pts`/`verts`/`quads`) to feed both painters. The
-hover marker is appended at paint time rather than into the scene, so
-pointermove never rebuilds the ~1000-op list. Known accepted canvas
-differences: hard clip at the element box (SVG had `overflow: visible`
-bleed) and hairline antialiasing deltas.
+The painter is a single `<canvas>` 2D renderer: `scene.ts` reifies the
+paint order as a tested op list from the derived geometry (numeric
+`pts`/`verts`/`quads`, viewBox units), `paint.ts` executes it with the
+view transform baked into the CTM (stroke widths/dashes stay in viewBox
+units), and the terrain mesh draws on an offscreen layer composited at
+the terrain opacity (group-opacity semantics + a hover-repaint cache).
+Per-frame updates are pixel writes — no DOM mutations, so
+browser-extension cosmetic filtering (AdBlock's injected CSS made the
+original SVG painter unusable in prod) has nothing to re-match, and
+large segments stay smooth. Ground textures are passed as canvases
+(`TileImage.source`), never data URLs. The hover marker is appended at
+paint time rather than into the scene, so pointermove never rebuilds
+the ~1000-op list. (An SVG painter with byte-identical output lived
+behind `?painter=svg` through the A/B verification and was removed
+after parity was confirmed — it's in git history if ever needed.)
 
 The non-obvious bits worth knowing at the app level:
 
@@ -378,7 +377,7 @@ The non-obvious bits worth knowing at the app level:
   saved pose yet.
 - **Resize handle**: bottom-right corner, document-level pointer
   listeners (not `setPointerCapture`, which would steal events from
-  uPlot or the SVG hit-testing). When the user has resized,
+  uPlot or the canvas hover hit-testing). When the user has resized,
   `dimensions.canvasAspect` is recomputed from `wrapperWidth /
   userHeight` so the projection refits without letterboxing.
 - **Reset view** appears top-right when zoom/pan/rotation differ from

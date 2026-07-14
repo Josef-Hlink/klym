@@ -1,12 +1,7 @@
 // Per-frame geometry builders for the segment topo view. Each function
 // projects route data through a `Projector` (closure-bound to the current
-// camera) and returns paint-ready primitives for the component to draw.
-//
-// Primitives carry both encodings where the painters need them: SVG
-// strings (point lists, path data — consumed by the SVG template) and
-// full-precision numeric siblings (`pts`/`verts`/`quads` — consumed by
-// the canvas painter via scene.ts). Strings round to 1 decimal; numeric
-// fields don't round.
+// camera) and returns numeric paint-ready primitives (`pts`/`verts`/
+// `quads`, viewBox units) for the canvas painter via scene.ts.
 //
 // All functions are pure given a Projector. The component owns the
 // reactive Projector and re-runs these helpers whenever camera state
@@ -71,7 +66,7 @@ export function buildTileTransform(
 // Side faces of the "earth block" the OSM ground sits on. Each face is a
 // parallelogram (top edge at minEle, bottom edge at minEle - blockDepthM).
 // Sorted back-to-front so painter's algorithm hides the rear faces.
-export type BlockFace = { points: string; verts: P2[]; depth: number };
+export type BlockFace = { verts: P2[]; depth: number };
 
 export function buildBlockFaces(
 	tileImage: TileImage | null,
@@ -99,7 +94,6 @@ export function buildBlockFaces(
 	];
 
 	const out: BlockFace[] = faces.map((f) => ({
-		points: f.corners.map((c) => `${c[0].toFixed(1)},${c[1].toFixed(1)}`).join(' '),
 		verts: f.corners.map((c): P2 => [c[0], c[1]]),
 		depth: (f.corners[0][2] + f.corners[1][2] + f.corners[2][2] + f.corners[3][2]) / 4
 	}));
@@ -110,24 +104,20 @@ export function buildBlockFaces(
 // Flat ground-projected shadow of the route — every point dropped to the
 // segment's minimum elevation. At pitch=0 it overlaps the real route
 // exactly; as you tilt, the shadow separates and anchors the route.
-export type ShadowPoints = { points: string; pts: P2[] };
-
 export function buildShadowPoints(
 	slicedPoints: readonly RoutePoint[],
 	refFrame: RefFrame | null,
 	project: Projector,
 	groundEleAt?: GroundEleAt
-): ShadowPoints {
-	if (!refFrame || slicedPoints.length < 2) return { points: '', pts: [] };
+): P2[] {
+	if (!refFrame || slicedPoints.length < 2) return [];
 	const groundAt = groundEleAt ?? flatGround(refFrame);
-	const parts: string[] = [];
 	const pts: P2[] = [];
 	for (const p of slicedPoints) {
 		const [x, y] = project(p.lat, p.lon, groundAt(p.lat, p.lon));
-		parts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
 		pts.push([x, y]);
 	}
-	return { points: parts.join(' '), pts };
+	return pts;
 }
 
 export type AnchorLine = { x1: number; y1: number; x2: number; y2: number };
@@ -186,7 +176,7 @@ export function buildBoundaryAnchors(
 	return out;
 }
 
-export type PolylineRun = { points: string; pts: P2[]; color: string; depth: number };
+export type PolylineRun = { pts: P2[]; color: string; depth: number };
 
 // Group the route into runs of consecutive same-color segments and tag
 // each run with its average depth, so the template can draw back-to-front
@@ -227,19 +217,16 @@ export function buildPolylineRuns(
 		const isLast = i === segColors.length - 1;
 		const breakAfter = isLast || segColors[i + 1] !== segColors[i] || !segVisible(i + 1);
 		if (breakAfter) {
-			const parts: string[] = [];
 			const pts: P2[] = [];
 			let depthSum = 0;
 			let depthCount = 0;
 			for (let j = runStart; j <= i + 1; j++) {
 				const [x, y, d] = projectedPoints[j];
-				parts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
 				pts.push([x, y]);
 				depthSum += d;
 				depthCount++;
 			}
 			out.push({
-				points: parts.join(' '),
 				pts,
 				color: segColors[i],
 				depth: depthCount > 0 ? depthSum / depthCount : 0
@@ -251,11 +238,11 @@ export function buildPolylineRuns(
 	return out;
 }
 
-export type DrapePath = { polyline: string; topPts: P2[]; drape: string; quads: [P2, P2, P2, P2][] };
+export type DrapePath = { topPts: P2[]; quads: [P2, P2, P2, P2][] };
 
-// Build the "drape" geometry for a single bin: a path of per-segment quads
-// from the route surface down to its shadow at refFrame.minEle, plus the
-// top edge as a polyline (used for the hover halo).
+// Build the "drape" geometry for a single bin: per-segment quads from the
+// route surface down to its shadow at refFrame.minEle, plus the top edge
+// as a polyline (used for the hover halo).
 export function buildDrape(
 	bin: GradeBin,
 	points: readonly RoutePoint[],
@@ -264,7 +251,7 @@ export function buildDrape(
 	project: Projector,
 	groundEleAt?: GroundEleAt
 ): DrapePath {
-	if (!refFrame) return { polyline: '', topPts: [], drape: '', quads: [] };
+	if (!refFrame) return { topPts: [], quads: [] };
 	const groundAt = groundEleAt ?? flatGround(refFrame);
 	const tops: [number, number][] = [];
 	const bots: [number, number][] = [];
@@ -289,8 +276,6 @@ export function buildDrape(
 	// the nonzero fill rule doesn't cancel overlap when the route revisits
 	// an area (U-turns, switchbacks). One self-intersecting polygon would
 	// cancel itself out where the top and bottom edges cross.
-	const fmt = (p: [number, number]) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`;
-	let drape = '';
 	const quads: [P2, P2, P2, P2][] = [];
 	for (let i = 0; i < tops.length - 1; i++) {
 		const A = tops[i];
@@ -299,21 +284,13 @@ export function buildDrape(
 		const D = bots[i];
 		// Cross of (B-A) × (D-A); positive in y-down screen coords means CW.
 		const cross = (B[0] - A[0]) * (D[1] - A[1]) - (B[1] - A[1]) * (D[0] - A[0]);
-		const seq: [P2, P2, P2, P2] = cross >= 0 ? [A, B, C, D] : [A, D, C, B];
-		drape += `M${fmt(seq[0])} L${fmt(seq[1])} L${fmt(seq[2])} L${fmt(seq[3])} Z `;
-		quads.push(seq);
+		quads.push(cross >= 0 ? [A, B, C, D] : [A, D, C, B]);
 	}
 
-	return { polyline: tops.map(fmt).join(' '), topPts: tops, drape, quads };
+	return { topPts: tops, quads };
 }
 
-export type HoverHighlight = {
-	polyline: string;
-	topPts: P2[];
-	drape: string;
-	quads: [P2, P2, P2, P2][];
-	color: string;
-};
+export type HoverHighlight = DrapePath & { color: string };
 
 // Reverse-highlight: when the chart reports a hovered distance, build the
 // halo polyline + translucent drape for the bin under that distance.
@@ -327,7 +304,7 @@ export function buildHoverHighlight(
 	theme: ColorTheme = 'klym',
 	groundEleAt?: GroundEleAt
 ): HoverHighlight {
-	const empty: HoverHighlight = { polyline: '', topPts: [], drape: '', quads: [], color: '' };
+	const empty: HoverHighlight = { topPts: [], quads: [], color: '' };
 	if (externalHoverDistM == null || !refFrame) return empty;
 	let bin: GradeBin | null = null;
 	for (const b of bins) {
@@ -337,18 +314,11 @@ export function buildHoverHighlight(
 		}
 	}
 	if (!bin) return empty;
-	const { polyline, topPts, drape, quads } = buildDrape(
-		bin,
-		points,
-		slicedPoints,
-		refFrame,
-		project,
-		groundEleAt
-	);
-	return { polyline, topPts, drape, quads, color: gradeColor(bin.grade, theme) };
+	const drape = buildDrape(bin, points, slicedPoints, refFrame, project, groundEleAt);
+	return { ...drape, color: gradeColor(bin.grade, theme) };
 }
 
-export type DrapeColored = { drape: string; quads: [P2, P2, P2, P2][]; color: string };
+export type DrapeColored = { quads: [P2, P2, P2, P2][]; color: string };
 
 // Every bin gets a translucent fence down to the ground plane.
 export function buildAllDrapes(
@@ -361,8 +331,8 @@ export function buildAllDrapes(
 	groundEleAt?: GroundEleAt
 ): DrapeColored[] {
 	if (!refFrame || bins.length === 0) return [];
-	return bins.map((bin) => {
-		const { drape, quads } = buildDrape(bin, points, slicedPoints, refFrame, project, groundEleAt);
-		return { drape, quads, color: gradeColor(bin.grade, theme) };
-	});
+	return bins.map((bin) => ({
+		quads: buildDrape(bin, points, slicedPoints, refFrame, project, groundEleAt).quads,
+		color: gradeColor(bin.grade, theme)
+	}));
 }

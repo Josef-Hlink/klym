@@ -5,7 +5,6 @@ import {
 	clampViewport,
 	computeViewTransform,
 	defaultViewport,
-	formatViewBox,
 	isZoomedOrPanned,
 	MAX_VIEW_FRAC,
 	MIN_VIEW_FRAC,
@@ -125,16 +124,6 @@ describe('isZoomedOrPanned', () => {
 	});
 });
 
-describe('formatViewBox', () => {
-	it('uses the natural canvas when viewport is null', () => {
-		expect(formatViewBox(null, dim)).toBe(`0 0 ${dim.W} ${dim.H}`);
-	});
-
-	it('serialises a viewport as "x y w h"', () => {
-		expect(formatViewBox({ x: 10, y: 20, w: 800, h: 400 }, dim)).toBe('10 20 800 400');
-	});
-});
-
 describe('computeViewTransform', () => {
 	// dim is 1600×800 (aspect 2), so a 800×400 CSS canvas at dpr 1 is an
 	// exact fit for the natural viewport.
@@ -195,7 +184,7 @@ describe('computeViewTransform', () => {
 		expect((v.x + v.w / 2) * t.k + t.tx).toBeCloseTo(400, 10);
 	});
 
-	it('null viewport falls back to the natural canvas (like formatViewBox)', () => {
+	it('null viewport falls back to the natural canvas', () => {
 		expect(computeViewTransform(null, dim, 800, 400, 1)).toEqual(
 			computeViewTransform(defaultViewport(dim), dim, 800, 400, 1)
 		);
