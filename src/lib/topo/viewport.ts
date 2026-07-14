@@ -116,3 +116,28 @@ export function formatViewBox(
 	if (!viewport) return `0 0 ${dimensions.W} ${dimensions.H}`;
 	return `${viewport.x} ${viewport.y} ${viewport.w} ${viewport.h}`;
 }
+
+// The canvas painter's equivalent of `viewBox` + preserveAspectRatio
+// "xMidYMid meet": a uniform scale k and translation mapping viewBox
+// coordinates to device pixels on a cssW×cssH canvas at the given
+// devicePixelRatio. Null viewport falls back to the natural canvas (like
+// formatViewBox); degenerate sizes return null (skip the paint).
+export type ViewTransform = { k: number; tx: number; ty: number };
+
+export function computeViewTransform(
+	viewport: Viewport | null,
+	dimensions: Dimensions,
+	cssW: number,
+	cssH: number,
+	dpr: number
+): ViewTransform | null {
+	const v = viewport ?? defaultViewport(dimensions);
+	const devW = cssW * dpr;
+	const devH = cssH * dpr;
+	if (!(devW > 0) || !(devH > 0) || !(v.w > 0) || !(v.h > 0)) return null;
+	const k = Math.min(devW / v.w, devH / v.h);
+	if (!Number.isFinite(k) || k <= 0) return null;
+	const tx = (devW - v.w * k) / 2 - v.x * k;
+	const ty = (devH - v.h * k) / 2 - v.y * k;
+	return { k, tx, ty };
+}

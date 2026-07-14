@@ -3,6 +3,7 @@ import type { Dimensions } from './projection.js';
 import {
 	applyZoomAtCursor,
 	clampViewport,
+	computeViewTransform,
 	defaultViewport,
 	formatViewBox,
 	isZoomedOrPanned,
@@ -131,5 +132,79 @@ describe('formatViewBox', () => {
 
 	it('serialises a viewport as "x y w h"', () => {
 		expect(formatViewBox({ x: 10, y: 20, w: 800, h: 400 }, dim)).toBe('10 20 800 400');
+	});
+});
+
+describe('computeViewTransform', () => {
+	// dim is 1600×800 (aspect 2), so a 800×400 CSS canvas at dpr 1 is an
+	// exact fit for the natural viewport.
+	it('exact fit: k = cssW/w, no letterbox offset, no pan offset', () => {
+		const t = computeViewTransform(defaultViewport(dim), dim, 800, 400, 1)!;
+		expect(t.k).toBeCloseTo(0.5, 10);
+		expect(t.tx).toBeCloseTo(0, 10);
+		expect(t.ty).toBeCloseTo(0, 10);
+	});
+
+	it('letterboxes vertically when the canvas is taller than the viewport aspect', () => {
+		// 800×800 canvas, 1600×800 viewport → k limited by width (0.5),
+		// content is 400 device px tall → 200px top offset (xMidYMid meet).
+		const t = computeViewTransform(defaultViewport(dim), dim, 800, 800, 1)!;
+		expect(t.k).toBeCloseTo(0.5, 10);
+		expect(t.tx).toBeCloseTo(0, 10);
+		expect(t.ty).toBeCloseTo(200, 10);
+	});
+
+	it('letterboxes horizontally when the canvas is wider than the viewport aspect', () => {
+		// 1600×400 canvas → k limited by height (0.5), content 800 device px
+		// wide → 400px left offset.
+		const t = computeViewTransform(defaultViewport(dim), dim, 1600, 400, 1)!;
+		expect(t.k).toBeCloseTo(0.5, 10);
+		expect(t.tx).toBeCloseTo(400, 10);
+		expect(t.ty).toBeCloseTo(0, 10);
+	});
+
+	it('pan shifts the translation by -x·k / -y·k', () => {
+		const base = computeViewTransform(defaultViewport(dim), dim, 800, 400, 1)!;
+		const panned = computeViewTransform(
+			{ x: 100, y: -40, w: dim.W, h: dim.H },
+			dim,
+			800,
+			400,
+			1
+		)!;
+		expect(panned.k).toBeCloseTo(base.k, 10);
+		expect(panned.tx).toBeCloseTo(base.tx - 100 * base.k, 10);
+		expect(panned.ty).toBeCloseTo(base.ty + 40 * base.k, 10);
+	});
+
+	it('dpr scales k (and offsets) proportionally', () => {
+		const t1 = computeViewTransform(defaultViewport(dim), dim, 800, 800, 1)!;
+		const t2 = computeViewTransform(defaultViewport(dim), dim, 800, 800, 2)!;
+		expect(t2.k).toBeCloseTo(t1.k * 2, 10);
+		expect(t2.tx).toBeCloseTo(t1.tx * 2, 10);
+		expect(t2.ty).toBeCloseTo(t1.ty * 2, 10);
+	});
+
+	it('a zoomed-in viewport maps its window to the full canvas', () => {
+		// Viewport = right half of the canvas: a world point at the viewport
+		// origin lands at device (0, 0); the viewport centre lands mid-canvas.
+		const v = { x: 800, y: 400, w: 800, h: 400 };
+		const t = computeViewTransform(v, dim, 800, 400, 1)!;
+		expect(v.x * t.k + t.tx).toBeCloseTo(0, 10);
+		expect(v.y * t.k + t.ty).toBeCloseTo(0, 10);
+		expect((v.x + v.w / 2) * t.k + t.tx).toBeCloseTo(400, 10);
+	});
+
+	it('null viewport falls back to the natural canvas (like formatViewBox)', () => {
+		expect(computeViewTransform(null, dim, 800, 400, 1)).toEqual(
+			computeViewTransform(defaultViewport(dim), dim, 800, 400, 1)
+		);
+	});
+
+	it('returns null for degenerate sizes', () => {
+		expect(computeViewTransform(defaultViewport(dim), dim, 0, 400, 1)).toBeNull();
+		expect(computeViewTransform(defaultViewport(dim), dim, 800, 0, 1)).toBeNull();
+		expect(computeViewTransform({ x: 0, y: 0, w: 0, h: 400 }, dim, 800, 400, 1)).toBeNull();
+		expect(computeViewTransform(defaultViewport(dim), dim, 800, 400, 0)).toBeNull();
 	});
 });
