@@ -57,7 +57,7 @@ export async function bakeHillshade(texture: TileImage, grid: DemGrid): Promise<
 		ctx.globalCompositeOperation = 'source-over';
 		ctx.globalAlpha = 1;
 
-		return { ...texture, url: canvas.toDataURL('image/png') };
+		return { ...texture, url: canvas.toDataURL('image/png'), source: canvas };
 	} catch {
 		return texture;
 	}

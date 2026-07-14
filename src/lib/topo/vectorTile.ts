@@ -49,8 +49,22 @@ export async function buildVectorTileImage(bbox: TileBBox): Promise<TileImage | 
 				resolve();
 			});
 		});
+		// Copy the GL canvas into a 2D canvas while the drawing buffer is
+		// still alive — after map.remove() the WebGL canvas is not a safe
+		// drawImage source.
+		const gl = map.getCanvas();
+		let source: CanvasImageSource | undefined;
+		const copy = document.createElement('canvas');
+		copy.width = gl.width;
+		copy.height = gl.height;
+		const cctx = copy.getContext('2d');
+		if (cctx) {
+			cctx.drawImage(gl, 0, 0);
+			source = copy;
+		}
 		return {
-			url: map.getCanvas().toDataURL('image/png'),
+			url: gl.toDataURL('image/png'),
+			source,
 			minLat: bbox.minLat,
 			maxLat: bbox.maxLat,
 			minLon: bbox.minLon,

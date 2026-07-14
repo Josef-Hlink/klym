@@ -76,6 +76,10 @@ export type TileBBox = {
 
 export type TileImage = TileBBox & {
 	url: string;
+	// The compositing canvas the data URL was serialized from, when the
+	// producer has one. The canvas painter draws this directly (synchronous,
+	// no decode); the SVG template keeps using `url`.
+	source?: CanvasImageSource;
 };
 
 // Standard slippy-tile <-> lat/lon math.
@@ -286,6 +290,7 @@ export async function buildTileImage(
 
 	return {
 		url: cropped.toDataURL('image/png'),
+		source: cropped,
 		minLon: bbox.minLon,
 		maxLon: bbox.maxLon,
 		maxLat: bbox.maxLat,
