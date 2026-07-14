@@ -274,12 +274,29 @@ props).
 
 ### SegmentMap (3D segment view)
 
-Lives at the bottom of the segment page. Pure SVG, no MapLibre — every
-pixel is hand-computed. The component owns reactive state (camera,
-viewport, hover, tile fetch) and the SVG template; all the math lives
-under `src/lib/topo/` (projection, tiles, geometry, viewport — each
-with co-located tests). **See `src/lib/topo/CLAUDE.md` for the module
-map and in-dir conventions.**
+Lives at the bottom of the segment page. No MapLibre — every pixel is
+hand-computed. The component owns reactive state (camera, viewport,
+hover, tile fetch); all the math lives under `src/lib/topo/`
+(projection, tiles, geometry, scene, viewport — each with co-located
+tests). **See `src/lib/topo/CLAUDE.md` for the module map and in-dir
+conventions.**
+
+The painter is a single `<canvas>` 2D renderer by default: `scene.ts`
+reifies the paint order as a tested op list from the derived geometry,
+`paint.ts` executes it with the view transform baked into the CTM
+(stroke widths/dashes stay in viewBox units, like SVG), and the terrain
+mesh draws on an offscreen layer composited at the terrain opacity
+(group-opacity semantics + a hover-repaint cache). Per-frame updates
+are pixel writes — no DOM mutations, so browser-extension cosmetic
+filtering (AdBlock's injected CSS made the SVG version unusable in
+prod) has nothing to re-match, and large segments stay smooth. The
+pre-existing SVG template remains as a fallback behind `?painter=svg`
+for A/B parity checks; geometry builders emit both SVG strings and
+numeric siblings (`pts`/`verts`/`quads`) to feed both painters. The
+hover marker is appended at paint time rather than into the scene, so
+pointermove never rebuilds the ~1000-op list. Known accepted canvas
+differences: hard clip at the element box (SVG had `overflow: visible`
+bleed) and hairline antialiasing deltas.
 
 The non-obvious bits worth knowing at the app level:
 
@@ -336,12 +353,14 @@ The non-obvious bits worth knowing at the app level:
   against the front faces' `verts` — the walls aren't terrain, so the
   mask can't know them), dilated by one point so ghost runs share their
   boundary point with solid runs. Anchors and endpoint dots follow the
-  mask; only the hover marker sits above the ghost. Two paint-level
-  approaches (per-pixel ray-dashed polylines, then painter-interleaved
-  per-cell route runs) are preserved on the `occlusion-dead-end` branch
-  as a record of why not: stroke width, translucent shadows and
-  supporting-slope burial make paint-level occlusion an artifact
-  factory.
+  mask; only the hover marker sits above the ghost. The whole
+  interleave (solid → dots → front faces → ghost) is locked as data by
+  `scene.ts` + scene.test.ts, so it's painter-independent. Two
+  paint-level approaches (per-pixel ray-dashed polylines, then
+  painter-interleaved per-cell route runs) were tried and abandoned in
+  the SVG era as the record of why not: stroke width, translucent
+  shadows and supporting-slope burial make paint-level occlusion an
+  artifact factory.
 
 ### SegmentMap controls and 2D/3D toggle
 

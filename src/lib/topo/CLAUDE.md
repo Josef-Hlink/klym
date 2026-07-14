@@ -20,12 +20,15 @@ when working *inside* this directory.
 | `terrain.ts` | Heightfield mesh math (pure): `affineFromTriangle`, `buildClipTriangles`, `buildTerrainMesh`, `terrainDrawOrder`, `buildTerrainBlockFaces`. |
 | `visibility.ts` | Route occlusion as a geometric mask (pure): `computeVisibility` (view-ray march over the DEM: clearance margin, pitch-scaled near skip, island smoothing), `smoothVisibility`, `visibleAtDist`. |
 | `hillshade.ts` | DOM-touching `bakeHillshade`: multiplies `computeShade` over the ground texture once per texture/grid pair. |
-| `geometry.ts` | Per-frame SVG-ready builders: polylines, anchor lines, drape paths, block faces, hover highlight, tile transform. All take a `Projector`; ground-touching builders take an optional `groundEleAt` sampler (default: flat `refFrame.minEle`). |
-| `viewport.ts` | Viewport pan/zoom math: `clampViewport`, `applyZoomAtCursor`, `isZoomedOrPanned`, `formatViewBox`. |
+| `geometry.ts` | Per-frame paint-ready builders: polylines, anchor lines, drape paths, block faces, hover highlight, tile transform. All take a `Projector`; ground-touching builders take an optional `groundEleAt` sampler (default: flat `refFrame.minEle`). Primitives carry both encodings — SVG strings (1-dp) for the SVG fallback AND full-precision numeric siblings (`pts`/`verts`/`quads`) for the canvas painter. When you add a builder, emit both in the same loop. |
+| `scene.ts` | The canvas painter's paint order as data (pure): `buildScene(inputs) → SceneOp[]` reifies the SVG template's layer order — including the occlusion interleave (solid runs → dots → front faces → ghost) — from the component's derived builder outputs. Never calls a builder itself, so each derived keeps its own recompute cadence. Images are string keys (`'ground'`/`'tile'`), resolved by paint.ts. |
+| `paint.ts` | DOM-touching `renderScene`: executes SceneOps on a 2D context with the `computeViewTransform` CTM baked in (lineWidth/dash/radii stay in viewBox units, like SVG). Owns the offscreen terrain-mesh layer: drawn once per (mesh, view, texture) key, composited at `globalAlpha = terrainOpacity` — group-opacity semantics AND a cache (hover repaints blit instead of re-clipping ~900 triangles). |
+| `viewport.ts` | Viewport pan/zoom math: `clampViewport`, `applyZoomAtCursor`, `isZoomedOrPanned`, `formatViewBox`, `computeViewTransform` (the canvas equivalent of viewBox + xMidYMid meet, in device px). |
 
 Each pure module has a co-located `*.test.ts`. Run them with `pnpm test`.
 DOM-touching functions (`buildTileImage`, `buildVectorTileImage`,
-`buildDemGrid`, `bakeHillshade`) are one per module and untested by policy.
+`buildDemGrid`, `bakeHillshade`, `renderScene`) are one per module and
+untested by policy.
 
 ## The Projector pattern
 
@@ -50,8 +53,9 @@ take a `ProjectCtx` and re-pack the args at every call site. Take a
 
 1. Write the math as a pure function in the right module (or a new one
    if it's a new concern). Take whatever inputs you need — a
-   `Projector`, the route, the bins, etc. — and return SVG-ready
-   primitives (point strings, line records, path data).
+   `Projector`, the route, the bins, etc. — and return paint-ready
+   primitives with BOTH encodings: SVG strings for the SVG fallback and
+   numeric siblings for the canvas painter (see `geometry.ts`).
 2. Add a `*.test.ts` next to it. Use the **identity-style projector**
    trick from the existing tests (`(lat, lon, ele) => [lon, -lat, ele]`)
    so you can assert on shape/ordering without standing up the full
@@ -63,7 +67,10 @@ take a `ProjectCtx` and re-pack the args at every call site. Take a
    - cursor-anchor / world-pinned invariants for interactive math
 3. In `SegmentMap.svelte`, wire it as a one-liner `$derived` against the
    reactive inputs — the component should never re-implement the math
-   inline.
+   inline. Then thread it into `buildScene` (scene.ts) at the right
+   position in the paint order, add a `renderScene` case if it needs a
+   new op kind, and — while the SVG fallback lives — mirror it in the
+   SVG template. Lock its position with a scene.test.ts ordering case.
 
 ## Gotchas
 
@@ -100,7 +107,9 @@ take a `ProjectCtx` and re-pack the args at every call site. Take a
   edges (linearity), so geometry can't crack. The static UV clip paths
   are dilated ×1.03 about their centroids to close anti-aliasing seams;
   the mesh gets ONE group-level opacity (per-triangle opacity would
-  double-darken the overlaps into visible grid lines).
+  double-darken the overlaps into visible grid lines) — in the canvas
+  painter that's the offscreen mesh layer composited at `globalAlpha`,
+  in the SVG fallback the `<g opacity>`.
 - **`demEleAt` interpolates over the TRIANGULATED cell surface** (the
   same NE–SW split the mesh draws), not bilinear — the visibility test
   must see exactly the surface that's rendered. Don't "simplify" it.
@@ -108,7 +117,9 @@ take a `ProjectCtx` and re-pack the args at every call site. Take a
   into the painter.** The route draws on top of the mesh; hidden
   stretches drop from the solid runs and reappear as a low-opacity
   ghost drawn above the block walls (wall-covered stretches join the
-  ghost via `pointInPolygon` against the faces' `verts`). Two
-  paint-level attempts (ray-dashed polylines, painter-interleaved
-  per-cell route runs) live on the `occlusion-dead-end` branch as the
-  record of why not.
+  ghost via `pointInPolygon` against the faces' `verts`). Because the
+  mask lives in geometry, it survived the SVG→canvas painter swap
+  unchanged — the interleave is locked by scene.test.ts. Two paint-level
+  attempts (ray-dashed polylines, painter-interleaved per-cell route
+  runs) were tried and abandoned during the SVG era as artifact
+  factories; that history is the reason for this rule.
