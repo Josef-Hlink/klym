@@ -33,13 +33,22 @@ export type RouteSummary = Omit<RouteData, 'points' | 'bounds'> & {
 	pointCount: number;
 };
 
-/** A builtin example route (a TdF stage) as listed on the homepage. */
+/** A builtin example route (a grand tour stage) as listed on the homepage. */
 export type StageSummary = RouteSummary & {
 	stage: number;
-	/** Race day, YYYY-MM-DD (Europe/Paris). */
+	/** Race day, YYYY-MM-DD in the race's own time zone. */
 	date: string;
 	start: string;
 	finish: string;
+};
+
+/** One builtin race and its stages, as the homepage renders it. */
+export type BuiltinRace = {
+	id: string;
+	label: string;
+	flag: string;
+	defaultOpen: boolean;
+	stages: StageSummary[];
 };
 
 export type SegmentData = {

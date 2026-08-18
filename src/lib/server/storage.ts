@@ -7,7 +7,7 @@ import { getBuiltinRoute } from './builtin.js';
 // which is the intended behaviour for the hosted, login-less app.
 //
 // Reads additionally fall back to the shared read-only builtin registry
-// (builtin.ts — the TdF stages), so builtin routes open like any other.
+// (builtin.ts — the grand tour stages), so builtin routes open like any other.
 // Mutations never touch builtin data: route rename/delete miss and 404, and
 // segments saved on a builtin route live in a hidden per-session RouteRecord
 // that references the shared RouteData (no copy, excluded from listRoutes).

@@ -40,8 +40,9 @@ Package manager is **pnpm**. Use `pnpm <script>`, not `pnpm exec <tool>`.
 
 ## Routes
 
-- `/` — upload + "Your routes" list + collapsible "Tour 🇫🇷 stages"
-  list of the builtin TdF routes (SSR on)
+- `/` — upload + "Your routes" list + one collapsible list per builtin
+  race, current race first ("Vuelta 🇪🇸 stages" open, "Tour 🇫🇷 stages"
+  collapsed below it) (SSR on)
 - `/routes/[id]` — route viewer: map + chart + marker UI + segments
   list (SSR **off** — MapLibre and uPlot both need the DOM)
 - `/routes/[id]/segments/[segId]` — segment profile + export (SSR **off**
@@ -85,15 +86,29 @@ session, segments per route); conflicts return 409 inline.
 
 ### Builtin example routes (`src/lib/server/builtin.ts`)
 
-The 21 Tour de France 2026 stages, bundled as GPX under
-`src/lib/server/tdf-2026/` (committed; whitespace/trailing-zero slimmed;
-source `cdn.cyclingstage.com/images/tour-de-france/2026/stage-{n}-route.gpx`
-— re-download to refresh, their stage-6 trace is currently ~57 km short of
-the official route). Loaded via `import.meta.glob(..., '?raw')`, parsed
-once per process on first access, shared **read-only by reference** across
-all sessions — zero per-visitor memory. Stage names/dates live in the
-`STAGES` table; ids are `tdf-2026-stage-{n}`; `builtin.test.ts` guards the
-table and that every bundled file parses.
+The 2026 Vuelta a España and Tour de France, 21 stages each, bundled as
+GPX under `src/lib/server/{vuelta,tdf}-2026/` (committed; whitespace and
+trailing zeros slimmed, data untouched; source
+`cdn.cyclingstage.com/images/{vuelta-spain,tour-de-france}/2026/stage-{n}-route.gpx`
+— re-download to refresh; slimming is: collapse whitespace between tags,
+strip trailing zeros from `trkpt` lat/lon and `<ele>` only — `<bounds>`
+keeps its padding — one trailing newline). Their traces are
+approximations and a few drift from the official route book: Vuelta stage 20 is ~19 km short (it
+predates the El Duque reroute that replaced Hazallanas), Vuelta stage 8
+~10 km short and TdF stage 6 ~57 km short. Loaded via
+`import.meta.glob('./*/stage-*.gpx', '?raw')`, parsed once per process on
+first access, shared **read-only by reference** across all sessions —
+zero per-visitor memory.
+
+Everything race-specific lives in the `RACES` table (id prefix, label,
+flag, GPX dir, time zone, homepage `defaultOpen`, stage list) and the
+homepage renders them in `RACES` order, so adding
+a race is data-only: drop slimmed `stage-NN.gpx` files in a new sibling
+dir and add an entry. Ids are `{race.id}-stage-{n}`;
+`listBuiltinRaces()` feeds the homepage one group per race and
+`todayStageId()` scans all races in their own time zones;
+`builtin.test.ts` guards the tables, the route-book distances and that
+every bundled file parses.
 
 Storage integration: `readRoute`/`routeExists` fall back to the registry
 (session first, so nothing shadows a user's own data), which makes the
@@ -102,7 +117,7 @@ and 404. Saving a segment on a stage materializes a *hidden* per-session
 `RouteRecord` (`builtin: true`, route shared by reference, skipped by
 `listRoutes`) so segments stay per-visitor without the stage appearing
 under "Your routes". The homepage marks today's stage (`todayStageId()`,
-Europe/Paris) with a yellow badge.
+each race in its own time zone) with a yellow badge.
 
 ## Key design decisions
 
