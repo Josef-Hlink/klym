@@ -46,6 +46,7 @@ async function connect(): Promise<Sql> {
 	const sql = postgres(dsn, { onnotice: () => {}, ...options });
 	await migrate(sql);
 	startSweep(sql);
+	registerShutdown(sql);
 	return sql;
 }
 
@@ -94,11 +95,10 @@ async function migrate(sql: Sql): Promise<void> {
 	}
 }
 
-let sweepStarted = false;
+let sweepTimer: ReturnType<typeof setInterval> | null = null;
 function startSweep(sql: Sql): void {
-	if (sweepStarted) return;
-	sweepStarted = true;
-	const timer = setInterval(() => {
+	if (sweepTimer) return;
+	sweepTimer = setInterval(() => {
 		const cutoff = new Date(Date.now() - OWNER_TTL_MS);
 		// Routes and segments cascade off the owner row.
 		sql`delete from owners where last_seen < ${cutoff}`.catch((err) => {
@@ -106,5 +106,23 @@ function startSweep(sql: Sql): void {
 		});
 	}, SWEEP_INTERVAL_MS);
 	// Don't keep the Node process alive solely for the sweep timer.
-	timer.unref?.();
+	sweepTimer.unref?.();
+}
+
+// adapter-node closes the HTTP server on SIGTERM/SIGINT and then emits
+// 'sveltekit:shutdown', but it knows nothing about our connection pool.
+// postgres.js keeps its sockets open, so the event loop never drains and the
+// process never exits on its own: systemd sits in stop-sigterm until
+// TimeoutStopSec (90s by default) expires and SIGKILLs it, which also defeats
+// the graceful request drain adapter-node just did. Close the pool so the
+// process can exit by itself.
+function registerShutdown(sql: Sql): void {
+	process.once('sveltekit:shutdown', async () => {
+		if (sweepTimer) clearInterval(sweepTimer);
+		try {
+			await sql.end({ timeout: 5 });
+		} catch {
+			// Already going down; nothing useful to do with a close error.
+		}
+	});
 }
