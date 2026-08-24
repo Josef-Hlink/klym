@@ -11,21 +11,31 @@ browser ──https──▶ Cloudflare edge ──tunnel──▶ cloudflared (
                                                     │ http://127.0.0.1:1047
                                                     ▼
                                               klym (Node, systemd)
-                                              in-memory, per-visitor
+                                                    │ unix socket
+                                                    ▼
+                                              postgres (klym db)
 ```
 
 `cloudflared` dials *out* to Cloudflare and holds the connection open, so the
 box needs **zero open inbound ports**. klym itself only listens on loopback;
 the tunnel is the only thing that can reach it.
 
-**Data is ephemeral.** Storage is an in-memory map keyed by an anonymous
-`klym_sid` session cookie (see `src/lib/server/storage.ts`). Each visitor gets
-their own isolated routes/segments; everything is dropped when the session's
-cookie expires, after ~6h idle, or whenever the service restarts (including
-every redeploy). There is no database and nothing on disk to back up.
+**Data is durable, and per-visitor.** Routes and segments live in postgres,
+scoped by an anonymous `klym_sid` cookie (see `src/lib/server/storage.ts`).
+Each visitor gets their own isolated sandbox and gets it back on a return
+visit; a redeploy or restart no longer wipes anything. Owners idle for 90 days
+are swept. There is a database to back up now — see Step 0.
+
+**No password anywhere in this setup.** klym runs as a systemd `DynamicUser`,
+which creates a transient system user named `klym`; postgres peer auth over
+the unix socket maps that name onto the `klym` role. That's the entire
+credential story, and it's why `DynamicUser = true` is load-bearing rather
+than just hardening.
 
 ## Prerequisites
 
+- A PostgreSQL instance on the same box, with a `klym` role and a `klym`
+  database it owns, reachable on a unix socket. See Step 0.
 - A NixOS box with flakes enabled:
   ```nix
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
@@ -33,6 +43,53 @@ every redeploy). There is no database and nothing on disk to back up.
 - A domain whose DNS is managed by Cloudflare (any plan, including free).
 - `cloudflared` available — `nix-shell -p cloudflared` is enough for the
   one-time setup commands below.
+
+## Step 0 — The database
+
+klym needs a `klym` role and a `klym` database it owns. Declare them rather
+than reaching for `createdb`, so the next person reading the config sees them:
+
+```nix
+services.postgresql = {
+  enable = true;
+  ensureDatabases = [ "klym" ];
+  ensureUsers = [ { name = "klym"; ensureDBOwnership = true; } ];
+};
+```
+
+No password and no `pg_hba` change: the default `local` peer rule already
+matches the transient `klym` user the service runs as.
+
+Two things `ensureUsers` will *not* do for you:
+
+- **Admin access.** `ensureUsers` has no notion of grants, so your own login
+  role can connect to the database but can't read its tables. Fix once, after
+  the database exists: `sudo -u postgres psql -c 'GRANT klym TO youruser;'`
+- **Backups.** Nothing here sets them up. A nightly `pg_dumpall` is the
+  minimum now that a redeploy no longer being destructive is the whole point.
+
+Verify the app's own connection path — a sandboxed `DynamicUser` reaching a
+socket under `ProtectSystem = strict` is the one part worth proving:
+
+```sh
+sudo systemd-run --pty --collect \
+  -p DynamicUser=yes -p User=klym \
+  -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes \
+  /run/current-system/sw/bin/psql -h /run/postgresql -d klym \
+  -Atc 'select current_user, current_database()'
+```
+
+Expect `klym|klym`.
+
+`services.klym.databaseUrl` defaults to
+`postgresql:///klym?host=/run/postgresql` and only needs setting if your
+socket lives elsewhere. Keep the libpq `?host=` spelling — `psql` and
+`pg_dump` take the same string, and `src/lib/server/db.ts` translates it for
+the driver, which doesn't understand that form natively.
+
+Schema is applied by the app itself: migrations are bundled into the build and
+run once per process on first use, tracked in a `_migrations` table. There is
+no manual migrate step at deploy.
 
 ## Step 1 — Create the Cloudflare Tunnel
 
@@ -169,30 +226,32 @@ sudo nixos-rebuild switch --flake /etc/nixos#YOUR_HOST
 ```
 
 If `pnpm-lock.yaml` changed in the new revision, refresh the hash (Step 2)
-first. Every restart wipes in-memory data — expected, by design.
+first. Restarts preserve data; any new migrations apply themselves on the
+first request after the restart.
 
-## Tuning the in-memory limits
+## Tuning the storage limits
 
-Defaults live at the top of `src/lib/server/storage.ts`:
+These are abuse bounds, not memory bounds — the data is on disk now. Defaults:
 
-| Constant                  | Default | Meaning                                   |
-| ------------------------- | ------- | ----------------------------------------- |
-| `SESSION_TTL_MS`          | 6h      | idle sessions are swept                   |
-| `MAX_SESSIONS`            | 200     | concurrent visitors before oldest evicted |
-| `MAX_ROUTES_PER_SESSION`  | 50      | routes per visitor                        |
-| `MAX_SEGMENTS_PER_ROUTE`  | 100     | segments per route                        |
+| Constant                 | Where                       | Default | Meaning                        |
+| ------------------------ | --------------------------- | ------- | ------------------------------ |
+| `MAX_ROUTES_PER_OWNER`   | `src/lib/server/storage.ts` | 50      | routes per visitor             |
+| `MAX_SEGMENTS_PER_ROUTE` | `src/lib/server/storage.ts` | 100     | segments per route             |
+| `OWNER_TTL_MS`           | `src/lib/server/db.ts`      | 90 days | idle owners swept, cascading   |
 
-Raise them if your box has the RAM and you trust your audience; keep them low
-if the link is public, since a parsed 15 MB GPX is a chunk of memory per route.
+Overflow evicts that owner's oldest entry. Raise them if you trust your
+audience; keep them low if the link is public, since a 15 MB GPX is a real
+chunk of disk per route.
 
-These caps bound *counts*, not *bytes* — they can't stop a flood of large
-uploads from growing the heap. The systemd resource ceiling below is the
-backstop for that.
+The sweep is orphan collection: a visitor idle that long has almost certainly
+lost the cookie pointing at their rows. Lower it if you want the box tidier,
+raise it if losing a returning visitor's routes would annoy you.
 
 ## Capping memory at the systemd level
 
-The store has no hard byte limit, so the module also caps the service cgroup.
-On NixOS this is just systemd's `MemoryHigh`/`MemoryMax`:
+Parsing a 15 MB GPX and rehydrating a route's point array are both transient
+memory spikes, so the module caps the service cgroup. On NixOS this is just
+systemd's `MemoryHigh`/`MemoryMax`:
 
 | Option              | Default | Meaning                                            |
 | ------------------- | ------- | -------------------------------------------------- |
@@ -201,8 +260,8 @@ On NixOS this is just systemd's `MemoryHigh`/`MemoryMax`:
 | `services.klym.cpuQuota`   | `200%`  | CPU ceiling, in cores (`100%` = one core)   |
 
 When klym crosses `memoryMax` the kernel OOM-kills it; `OOMPolicy = "kill"`
-takes down the whole cgroup and `Restart = on-failure` restarts it with a
-fresh (empty) store — harmless, since storage is ephemeral. If it keeps
+takes down the whole cgroup and `Restart = on-failure` restarts it — stored
+data is in postgres and unaffected. If it keeps
 OOMing, systemd's default start-rate limit trips and **leaves it stopped**, so
 a runaway can't thrash the box; you'd `systemctl reset-failed klym` to revive
 it. `cpuQuota` is the matching backstop for a shared box: klym's server side
@@ -249,8 +308,10 @@ year-long cookie which makes the **Send to Garmin** button appear on route
 pages. The device build bakes the same token in via `garmin/secrets.token`
 (see `garmin/README.md`).
 
-The route slot is in-memory like everything else: every deploy or restart
-empties it, so re-send the route from the browser before riding. Anyone who
+The route slot stays in-memory even though routes themselves no longer are —
+it's a single global slot outside session storage, since the device has no
+cookie. Every deploy or restart empties it, so re-send the route from the
+browser before riding. Anyone who
 has the token can read/overwrite the single slot — it's a personal feature;
 rotate the token in the env file if it ever leaks.
 

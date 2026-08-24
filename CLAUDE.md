@@ -20,10 +20,11 @@ Remote: `Josef-Hlink/klym` (private, MIT).
 - MapLibre GL 5 (OSM raster tiles, no token required)
 - uPlot 1.6 (interactive elevation chart in the route viewer)
 - `fast-xml-parser` (GPX parsing server-side)
-- In-memory per-session store — no database, no disk (see Storage below)
+- PostgreSQL via `postgres` (postgres.js), owner-scoped (see Storage below)
 - `@sveltejs/adapter-node` — emits `build/` (`node build/index.js`) for
   self-hosting; deployed via a Nix flake + NixOS module (see `HOSTING.md`)
-- Vitest 4 for the pure-helper tests under `src/lib/`
+- Vitest 4 for the pure helpers under `src/lib/`, plus a postgres-gated
+  integration suite for `src/lib/server/storage.ts`
 
 Package manager is **pnpm**. Use `pnpm <script>`, not `pnpm exec <tool>`.
 
@@ -59,30 +60,68 @@ Package manager is **pnpm**. Use `pnpm <script>`, not `pnpm exec <tool>`.
 Server loads (`+page.server.ts`) still run server-side even with
 `ssr = false`; only HTML rendering is skipped.
 
-## Storage (in-memory, per-visitor)
+## Storage (postgres, per-visitor)
 
-`src/lib/server/storage.ts` holds everything in a process-lifetime
-`Map`, scoped by `owner` (the anonymous `klym_sid` session id assigned
-in `src/hooks.server.ts` → `locals.owner`). Shape:
+`src/lib/server/storage.ts` is a thin mapping onto three tables, scoped
+by `owner` (the anonymous `klym_sid` session id assigned in
+`src/hooks.server.ts` → `locals.owner`). The connection handle, the
+migration runner and the idle sweep live in `src/lib/server/db.ts`;
+schema lives in `src/lib/server/migrations/*.sql`.
 
 ```
-sessions: owner -> {
-  lastSeen,
-  routes: routeId -> { route: RouteData, segments: segId -> SegmentData }
-}
+owners   (id = klym_sid, user_id, last_seen)
+routes   (owner_id, id, name, points, bounds, …, builtin, created_at)
+segments (owner_id, route_id, id, name, bounds…, created_at)
 ```
 
-Nothing touches disk. Each visitor is isolated; data is dropped when the
-session cookie expires, after ~6h idle (the sweep), or on any restart —
-the intended behaviour for the hosted, login-less app. Every storage
-function takes `owner` as its first arg and is still `async` (call sites
-just `await` as before). Caps at the top of the file
-(`MAX_SESSIONS`/`MAX_ROUTES_PER_SESSION`/etc.) bound memory; overflow
-evicts the oldest. Ids are slugified names, unique per scope (routes per
-session, segments per route); conflicts return 409 inline.
+The exported API is unchanged from the in-memory era — same twelve
+functions, same signatures, `owner` first, all `async` — so no call site
+under `src/routes/` knows the difference.
 
-> Was filesystem-backed (`data/<route-id>/…`) through M9. The old `data/`
-> dir is now orphaned (still gitignored). See `HOSTING.md`.
+**Points are split off the metadata on purpose.** `RouteData.points` can
+be ~50k objects; `listRoutes` returns `RouteSummary` (everything *except*
+`points`/`bounds`, plus `pointCount`). Keeping the arrays in their own
+column with `point_count` denormalized means rendering the homepage never
+reads a points blob. They're stored as JSON `text`, not `jsonb` —
+nothing queries inside them, and jsonb would pay a parse/reserialize cost
+both ways for structure we never use.
+
+Migrations are inlined into the bundle by `import.meta.glob(…'?raw')`,
+the same trick `builtin.ts` uses for the GPX stages — `adapter-node` only
+emits what Vite bundles, so loose `.sql` files under `src/` would never
+reach `build/`. The runner applies un-applied files in filename order,
+one transaction each (postgres has transactional DDL, so a failure rolls
+back whole), tracked in `_migrations`. It runs from `db()` on first use:
+once per process, before the first query, awaited by every caller. A
+database that is down leaves klym down — deliberately, rather than
+silently serving an empty store.
+
+`DATABASE_URL` is a libpq-style socket DSN
+(`postgresql:///klym?host=/run/postgresql`). **postgres.js does not
+understand that form** — it reads only the URL's host component and
+forwards `?host=` as a startup parameter, which the server rejects — so
+`db.ts` lifts the socket path into an explicit option. Keeping the libpq
+spelling means the same value works with `psql`/`pg_dump`.
+
+In production the connection has no password and needs none: the unit
+runs `DynamicUser = true`, which creates a transient user named `klym`,
+and peer auth over the socket maps that onto the `klym` role. See
+`HOSTING.md`.
+
+Caps (`MAX_ROUTES_PER_OWNER`/`MAX_SEGMENTS_PER_ROUTE`) are abuse bounds
+now rather than memory bounds; overflow evicts the owner's oldest.
+Owners idle for 90 days are swept, cascading to their routes and
+segments. Ids are slugified names, unique per scope (routes per owner,
+segments per route); conflicts return 409 inline.
+
+`storage.test.ts` covers all twelve functions plus the builtin overlay
+against a real database, gated on `DATABASE_URL` so `pnpm test` stays
+fast and pure without one:
+`createdb -h /tmp klym && DATABASE_URL=postgresql:///klym?host=/tmp pnpm test`.
+
+> Was filesystem-backed (`data/<route-id>/…`) through M9, then an
+> in-memory `Map` through M12. The old `data/` dir is still orphaned and
+> gitignored. See `HOSTING.md`.
 
 ### Builtin example routes (`src/lib/server/builtin.ts`)
 
@@ -126,12 +165,16 @@ each race in its own time zone) with a yellow badge.
   the route viewer lists them with hover preview, whole-card click to
   the explore view, and a pencil "Adjust" that loads the bounds into
   the markers — it never places markers or saves segments on its own.
-  Detections are never saved: exploring is ephemeral by design
-  (sessions are short-lived anyway); only manual crops become segments.
-- **In-memory, per-session, ephemeral storage.** Keep it that way unless
-  the user asks for persistence. Hosted multi-user without login: each
-  visitor gets an isolated sandbox via the `klym_sid` cookie and loses it
-  when they leave. See `HOSTING.md` and the Storage section above.
+  Detections are never saved: exploring is ephemeral by design — a
+  detection is cheap to recompute and re-open from its URL, so only
+  manual crops become segments.
+- **Durable, per-visitor storage in postgres.** Hosted multi-user without
+  login: each visitor gets an isolated sandbox keyed by the `klym_sid`
+  cookie, which is now persistent (one year) so a returning visitor gets
+  their routes back — the cookie has to outlive the browser session or
+  durable rows are pointed at by an id nobody keeps. Anonymous owners
+  carry a nullable `user_id` so real accounts can land without breaking
+  them. See `HOSTING.md` and the Storage section above.
 - **500m default bucket.** The CF bar resolution. Bin size is configurable
   per segment view but not per route.
 - **50m elevation smoothing for cumulative ascent.** Raw GPS elevation
@@ -490,15 +533,20 @@ bridging, expandable parts, hover preview + quick-save, three sensitivity
 presets (see the autodetection note above) · M12 Garmin Connect IQ
 integration (`garmin/` + the send/fetch endpoints; see the Garmin note
 above) — web side live-verified, device field written but pending the
-one-time SDK install for simulator/on-bike verification.
+one-time SDK install for simulator/on-bike verification. · M13 durable
+storage: postgres on esther, owner-scoped schema + bundled migrations
+(`src/lib/server/db.ts`), persistent `klym_sid` cookie, gated integration
+suite.
 
 ## Next milestone (planned)
 
-M13 Strava sign-in + route/activity import (OAuth2). Routes via
+M14 Strava sign-in + route/activity import (OAuth2). Routes via
 `/routes/{id}/export_gpx` reuse `parseGpx` as-is; activities via
 `/activities/{id}/streams` map to `RoutePoint[]` and carry HR/power/
 cadence natively. The HTTPS callback URL it needs is already live:
 `https://klym.hlink.dev`.
 Caveat: Strava caps new apps to 1 athlete (you) until app review
-(~7–10 business days); ephemeral storage already satisfies their
-no-long-term-retention terms.
+(~7–10 business days). Note that storage is **no longer ephemeral** as of
+M13, so Strava's no-long-term-retention terms are now a real constraint
+rather than something the architecture satisfied for free — imported
+activity data needs its own retention story.
