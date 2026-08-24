@@ -1,118 +1,169 @@
-import type { RouteData, RouteSummary, SegmentData } from '$lib/types.js';
+import type { RouteBounds, RouteData, RouteSummary, SegmentData } from '$lib/types.js';
 import { getBuiltinRoute } from './builtin.js';
+import { db, type Sql } from './db.js';
 
-// In-memory, per-visitor storage. All data is scoped to an `owner` (the
-// anonymous klym_sid session id assigned in hooks.server.ts). Nothing is
-// persisted to disk: a process restart or an idle-session sweep drops it,
-// which is the intended behaviour for the hosted, login-less app.
+// Durable, per-visitor storage in postgres. All data is scoped to an `owner`
+// (the anonymous klym_sid session id assigned in hooks.server.ts). Schema lives
+// in ./migrations; the connection and the migration runner live in ./db.ts.
 //
 // Reads additionally fall back to the shared read-only builtin registry
 // (builtin.ts — the grand tour stages), so builtin routes open like any other.
-// Mutations never touch builtin data: route rename/delete miss and 404, and
-// segments saved on a builtin route live in a hidden per-session RouteRecord
-// that references the shared RouteData (no copy, excluded from listRoutes).
+// Builtin RouteData is never inserted: what gets stored for a stage is a hidden
+// overlay row (builtin = true, point columns null) that holds a visitor's own
+// segments, excluded from listRoutes and not renameable.
 
-interface RouteRecord {
-	route: RouteData;
-	segments: Map<string, SegmentData>;
-	/** Hidden segment overlay for a builtin route — skipped by listRoutes. */
-	builtin?: boolean;
-}
-
-interface Session {
-	routes: Map<string, RouteRecord>;
-	lastSeen: number;
-}
-
-// Bounds to keep a single misbehaving visitor (or many visitors) from
-// exhausting memory on a small box. Overflow evicts the oldest entry.
-const SESSION_TTL_MS = 6 * 60 * 60 * 1000; // drop sessions idle > 6h
-const SWEEP_INTERVAL_MS = 30 * 60 * 1000; // check every 30 min
-const MAX_SESSIONS = 200;
-const MAX_ROUTES_PER_SESSION = 50;
+// Abuse bounds, not memory bounds — overflow evicts the owner's oldest entry.
+// (The old MAX_SESSIONS cap was purely a memory bound and is gone; owners are
+// now collected by the idle sweep in db.ts instead.)
+const MAX_ROUTES_PER_OWNER = 50;
 const MAX_SEGMENTS_PER_ROUTE = 100;
 
-const sessions = new Map<string, Session>();
+type RouteRow = {
+	id: string;
+	name: string;
+	points: string | null;
+	bounds: RouteBounds | null;
+	total_dist_m: number | null;
+	total_ascent_m: number | null;
+	point_count: number | null;
+	created_at: Date;
+};
 
-let sweepStarted = false;
-function ensureSweep() {
-	if (sweepStarted) return;
-	sweepStarted = true;
-	const timer = setInterval(() => {
-		const cutoff = Date.now() - SESSION_TTL_MS;
-		for (const [id, s] of sessions) {
-			if (s.lastSeen < cutoff) sessions.delete(id);
-		}
-	}, SWEEP_INTERVAL_MS);
-	// Don't keep the Node process alive solely for the sweep timer.
-	timer.unref?.();
+type SegmentRow = {
+	id: string;
+	route_id: string;
+	name: string;
+	start_dist_m: number;
+	end_dist_m: number;
+	bin_size_m: number;
+	created_at: Date;
+};
+
+function toSegment(row: SegmentRow): SegmentData {
+	return {
+		id: row.id,
+		routeId: row.route_id,
+		name: row.name,
+		startDistM: row.start_dist_m,
+		endDistM: row.end_dist_m,
+		binSizeM: row.bin_size_m,
+		createdAt: row.created_at.toISOString()
+	};
 }
 
-/** Drop the lowest-`getTime` entries of a Map until it fits `max`. */
-function evictOldest<T>(map: Map<string, T>, max: number, getTime: (v: T) => number): void {
-	while (map.size > max) {
-		let oldestKey: string | undefined;
-		let oldestVal = Infinity;
-		for (const [k, v] of map) {
-			const ts = getTime(v);
-			if (ts < oldestVal) {
-				oldestVal = ts;
-				oldestKey = k;
-			}
-		}
-		if (oldestKey === undefined) break;
-		map.delete(oldestKey);
-	}
+/** Insert the owner if new, and mark it freshly used. */
+async function touch(sql: Sql, owner: string): Promise<void> {
+	await sql`
+		insert into owners (id) values (${owner})
+		on conflict (id) do update set last_seen = now()`;
 }
 
-/** Get (or lazily create) a session and mark it freshly used. */
-function touch(owner: string): Session {
-	ensureSweep();
-	let s = sessions.get(owner);
-	if (!s) {
-		s = { routes: new Map(), lastSeen: Date.now() };
-		sessions.set(owner, s);
-		evictOldest(sessions, MAX_SESSIONS, (v) => v.lastSeen);
-	} else {
-		s.lastSeen = Date.now();
-	}
-	return s;
+/** Drop the owner's oldest routes until they fit the cap. */
+async function evictRoutes(sql: Sql, owner: string): Promise<void> {
+	await sql`
+		delete from routes where owner_id = ${owner} and id in (
+			select id from routes where owner_id = ${owner}
+			order by created_at desc offset ${MAX_ROUTES_PER_OWNER}
+		)`;
+}
+
+/** Drop the route's oldest segments until they fit the cap. */
+async function evictSegments(sql: Sql, owner: string, routeId: string): Promise<void> {
+	await sql`
+		delete from segments
+		where owner_id = ${owner} and route_id = ${routeId} and id in (
+			select id from segments where owner_id = ${owner} and route_id = ${routeId}
+			order by created_at desc offset ${MAX_SEGMENTS_PER_ROUTE}
+		)`;
 }
 
 export async function routeExists(owner: string, id: string): Promise<boolean> {
-	return touch(owner).routes.has(id) || (await getBuiltinRoute(id)) != null;
+	const sql = await db();
+	const rows = await sql`select 1 from routes where owner_id = ${owner} and id = ${id} limit 1`;
+	return rows.length > 0 || (await getBuiltinRoute(id)) != null;
 }
 
 export async function writeRoute(owner: string, id: string, route: RouteData): Promise<void> {
-	const session = touch(owner);
-	session.routes.set(id, { route, segments: new Map() });
-	evictOldest(session.routes, MAX_ROUTES_PER_SESSION, (v) => Date.parse(v.route.createdAt));
+	const sql = await db();
+	await touch(sql, owner);
+	await sql`
+		insert into routes (
+			owner_id, id, name, points, bounds,
+			total_dist_m, total_ascent_m, point_count, builtin, created_at
+		) values (
+			${owner}, ${id}, ${route.name}, ${JSON.stringify(route.points)},
+			${sql.json(route.bounds)}, ${route.totalDistM}, ${route.totalAscentM},
+			${route.points.length}, false, ${route.createdAt}
+		)
+		on conflict (owner_id, id) do update set
+			name = excluded.name,
+			points = excluded.points,
+			bounds = excluded.bounds,
+			total_dist_m = excluded.total_dist_m,
+			total_ascent_m = excluded.total_ascent_m,
+			point_count = excluded.point_count,
+			builtin = false,
+			created_at = excluded.created_at`;
+	await evictRoutes(sql, owner);
 }
 
 export async function deleteRoute(owner: string, id: string): Promise<boolean> {
-	return touch(owner).routes.delete(id);
+	const sql = await db();
+	// Deliberately not filtered on `builtin`: deleting a stage's overlay row
+	// (and with it the visitor's segments on that stage) is what the in-memory
+	// store did, and the stage itself is untouched — it lives in builtin.ts.
+	const rows = await sql`
+		delete from routes where owner_id = ${owner} and id = ${id} returning id`;
+	return rows.length > 0;
 }
 
 export async function updateRouteName(owner: string, id: string, name: string): Promise<boolean> {
-	const rec = touch(owner).routes.get(id);
-	if (!rec || rec.builtin) return false;
-	rec.route = { ...rec.route, name };
-	return true;
+	const sql = await db();
+	const rows = await sql`
+		update routes set name = ${name}
+		where owner_id = ${owner} and id = ${id} and not builtin
+		returning id`;
+	return rows.length > 0;
 }
 
 export async function readRoute(owner: string, id: string): Promise<RouteData | null> {
-	return touch(owner).routes.get(id)?.route ?? (await getBuiltinRoute(id));
+	const sql = await db();
+	// `points is not null` skips builtin overlay rows, which carry segments but
+	// no route data — those fall through to the shared registry below.
+	const rows = await sql<RouteRow[]>`
+		select id, name, points, bounds, total_dist_m, total_ascent_m, point_count, created_at
+		from routes
+		where owner_id = ${owner} and id = ${id} and points is not null`;
+	const row = rows[0];
+	if (!row) return await getBuiltinRoute(id);
+	return {
+		id: row.id,
+		name: row.name,
+		points: JSON.parse(row.points as string),
+		totalDistM: row.total_dist_m as number,
+		totalAscentM: row.total_ascent_m as number,
+		bounds: row.bounds as RouteBounds,
+		createdAt: row.created_at.toISOString()
+	};
 }
 
 export async function listRoutes(owner: string): Promise<RouteSummary[]> {
-	const summaries: RouteSummary[] = [];
-	for (const { route, builtin } of touch(owner).routes.values()) {
-		if (builtin) continue;
-		const { points, bounds, ...rest } = route;
-		summaries.push({ ...rest, pointCount: points.length });
-	}
-	summaries.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-	return summaries;
+	const sql = await db();
+	// Metadata columns only — never the points blob. That split is the whole
+	// reason point_count is denormalized.
+	const rows = await sql<RouteRow[]>`
+		select id, name, total_dist_m, total_ascent_m, point_count, created_at
+		from routes
+		where owner_id = ${owner} and not builtin
+		order by created_at desc`;
+	return rows.map((row) => ({
+		id: row.id,
+		name: row.name,
+		totalDistM: row.total_dist_m as number,
+		totalAscentM: row.total_ascent_m as number,
+		pointCount: row.point_count as number,
+		createdAt: row.created_at.toISOString()
+	}));
 }
 
 export async function segmentExists(
@@ -120,7 +171,11 @@ export async function segmentExists(
 	routeId: string,
 	segId: string
 ): Promise<boolean> {
-	return touch(owner).routes.get(routeId)?.segments.has(segId) ?? false;
+	const sql = await db();
+	const rows = await sql`
+		select 1 from segments
+		where owner_id = ${owner} and route_id = ${routeId} and id = ${segId} limit 1`;
+	return rows.length > 0;
 }
 
 export async function readSegment(
@@ -128,22 +183,49 @@ export async function readSegment(
 	routeId: string,
 	segId: string
 ): Promise<SegmentData | null> {
-	return touch(owner).routes.get(routeId)?.segments.get(segId) ?? null;
+	const sql = await db();
+	const rows = await sql<SegmentRow[]>`
+		select id, route_id, name, start_dist_m, end_dist_m, bin_size_m, created_at
+		from segments
+		where owner_id = ${owner} and route_id = ${routeId} and id = ${segId}`;
+	return rows[0] ? toSegment(rows[0]) : null;
 }
 
 export async function writeSegment(owner: string, segment: SegmentData): Promise<void> {
-	const session = touch(owner);
-	let rec = session.routes.get(segment.routeId);
-	if (!rec) {
-		// Saving onto a builtin route: materialize the hidden overlay record.
+	const sql = await db();
+	const existing = await sql`
+		select 1 from routes where owner_id = ${owner} and id = ${segment.routeId} limit 1`;
+
+	if (existing.length === 0) {
+		// Saving onto a builtin route: materialize the hidden overlay row. The
+		// stage's RouteData stays in the shared registry — only the segments are
+		// per-visitor.
 		const route = await getBuiltinRoute(segment.routeId);
 		if (!route) return;
-		rec = { route, segments: new Map(), builtin: true };
-		session.routes.set(segment.routeId, rec);
-		evictOldest(session.routes, MAX_ROUTES_PER_SESSION, (v) => Date.parse(v.route.createdAt));
+		await touch(sql, owner);
+		await sql`
+			insert into routes (owner_id, id, name, builtin, created_at)
+			values (${owner}, ${segment.routeId}, ${route.name}, true, ${route.createdAt})
+			on conflict (owner_id, id) do nothing`;
+		await evictRoutes(sql, owner);
+	} else {
+		await touch(sql, owner);
 	}
-	rec.segments.set(segment.id, segment);
-	evictOldest(rec.segments, MAX_SEGMENTS_PER_ROUTE, (v) => Date.parse(v.createdAt));
+
+	await sql`
+		insert into segments (
+			owner_id, route_id, id, name, start_dist_m, end_dist_m, bin_size_m, created_at
+		) values (
+			${owner}, ${segment.routeId}, ${segment.id}, ${segment.name},
+			${segment.startDistM}, ${segment.endDistM}, ${segment.binSizeM}, ${segment.createdAt}
+		)
+		on conflict (owner_id, route_id, id) do update set
+			name = excluded.name,
+			start_dist_m = excluded.start_dist_m,
+			end_dist_m = excluded.end_dist_m,
+			bin_size_m = excluded.bin_size_m,
+			created_at = excluded.created_at`;
+	await evictSegments(sql, owner, segment.routeId);
 }
 
 export async function deleteSegment(
@@ -151,7 +233,12 @@ export async function deleteSegment(
 	routeId: string,
 	segId: string
 ): Promise<boolean> {
-	return touch(owner).routes.get(routeId)?.segments.delete(segId) ?? false;
+	const sql = await db();
+	const rows = await sql`
+		delete from segments
+		where owner_id = ${owner} and route_id = ${routeId} and id = ${segId}
+		returning id`;
+	return rows.length > 0;
 }
 
 export async function updateSegment(
@@ -160,15 +247,29 @@ export async function updateSegment(
 	segId: string,
 	patch: Partial<Pick<SegmentData, 'name' | 'startDistM' | 'endDistM' | 'binSizeM'>>
 ): Promise<boolean> {
-	const segments = touch(owner).routes.get(routeId)?.segments;
-	const seg = segments?.get(segId);
-	if (!segments || !seg) return false;
-	segments.set(segId, { ...seg, ...patch });
-	return true;
+	const sql = await db();
+	const cols: Record<string, string | number> = {};
+	if (patch.name !== undefined) cols.name = patch.name;
+	if (patch.startDistM !== undefined) cols.start_dist_m = patch.startDistM;
+	if (patch.endDistM !== undefined) cols.end_dist_m = patch.endDistM;
+	if (patch.binSizeM !== undefined) cols.bin_size_m = patch.binSizeM;
+	// An empty patch is a no-op that still reports whether the segment is there,
+	// matching the in-memory behaviour.
+	if (Object.keys(cols).length === 0) return await segmentExists(owner, routeId, segId);
+
+	const rows = await sql`
+		update segments set ${sql(cols)}
+		where owner_id = ${owner} and route_id = ${routeId} and id = ${segId}
+		returning id`;
+	return rows.length > 0;
 }
 
 export async function listSegments(owner: string, routeId: string): Promise<SegmentData[]> {
-	const rec = touch(owner).routes.get(routeId);
-	if (!rec) return [];
-	return [...rec.segments.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+	const sql = await db();
+	const rows = await sql<SegmentRow[]>`
+		select id, route_id, name, start_dist_m, end_dist_m, bin_size_m, created_at
+		from segments
+		where owner_id = ${owner} and route_id = ${routeId}
+		order by created_at desc`;
+	return rows.map(toSegment);
 }

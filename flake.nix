@@ -56,7 +56,11 @@
             pnpmDeps = pkgs.pnpm_10.fetchDeps {
               inherit (finalAttrs) pname version src;
               fetcherVersion = 1;
-              hash = "sha256-ww+xqE+j5K+ydooEGNhwSv9bzJpJpKEQVKDEv3lBqF4=";
+              # Regenerated 2026-08-24 when pnpm-lock.yaml gained `postgres`.
+              # There is no darwin package output, so this builds on the remote
+              # linux builder (ssh-ng://nixbuilder@esther) — `nix build
+              # .#packages.x86_64-linux.default` from the laptop is enough.
+              hash = "sha256-sgsnFE1yzs5iAnQjt/ek9n5lL9C8MTQOCfvNFdKrhGE=";
             };
 
             buildPhase = ''
@@ -142,13 +146,12 @@
               type = lib.types.str;
               default = "512M";
               description = ''
-                Hard memory ceiling (systemd MemoryMax). klym's in-memory store
-                has no byte cap — the storage limits bound counts, not bytes, and
-                a parsed 15 MB GPX is a chunk of memory per route — so a flood of
-                large uploads could otherwise grow unbounded. At this ceiling the
-                kernel OOM-kills klym and Restart=on-failure brings it back with a
-                fresh (empty) store. Raise it if you raise the storage caps in
-                src/lib/server/storage.ts; set "infinity" to disable.
+                Hard memory ceiling (systemd MemoryMax). Routes live in postgres
+                now, so this no longer bounds a growing store — it bounds the
+                transient cost of the work itself: parsing a 15 MB GPX, and
+                rehydrating a route's point array on read. At this ceiling the
+                kernel OOM-kills klym and Restart=on-failure brings it back;
+                stored data is unaffected. Set "infinity" to disable.
               '';
             };
 
@@ -162,6 +165,23 @@
                 keeps a flood of concurrent uploads from starving other services
                 on a shared box. "200%" leaves the rest of the cores free; set
                 "infinity" to disable.
+              '';
+            };
+
+            databaseUrl = lib.mkOption {
+              type = lib.types.str;
+              default = "postgresql:///klym?host=/run/postgresql";
+              description = ''
+                Postgres connection string. The default connects over the unix
+                socket as the transient DynamicUser named "klym", which peer
+                authentication maps straight onto the "klym" role — so there is
+                no password, no port and no secret file to manage. Keep the
+                libpq `?host=/path` spelling: it is what psql and pg_dump take,
+                and src/lib/server/db.ts translates it for the driver.
+
+                The database and role are declared on the host (for esther, in
+                dotfiles hosts/esther/postgres.nix); this module does not create
+                them.
               '';
             };
 
@@ -182,12 +202,20 @@
             systemd.services.klym = {
               description = "klym climb-profile web app";
               wantedBy = [ "multi-user.target" ];
-              after = [ "network.target" ];
+              # postgresql.service matters: without it a reboot races klym
+              # against the cluster, and repeated start failures burn systemd's
+              # start-rate limit and leave the unit stopped for good.
+              after = [
+                "network.target"
+                "postgresql.service"
+              ];
+              wants = [ "postgresql.service" ];
 
               environment = {
                 HOST = cfg.host;
                 PORT = toString cfg.port;
                 ORIGIN = cfg.origin;
+                DATABASE_URL = cfg.databaseUrl;
                 # adapter-node defaults to 512K; klym accepts GPX up to 15 MB.
                 BODY_SIZE_LIMIT = "16M";
                 NODE_ENV = "production";
@@ -199,20 +227,25 @@
                 WorkingDirectory = "${cfg.package}/lib/klym";
                 Restart = "on-failure";
 
-                # Cap the cgroup so the in-memory store can't take the box down.
-                # On hitting MemoryMax the kernel OOM-kills the service; OOMPolicy
-                # kills the whole cgroup and Restart=on-failure brings it back
-                # with an empty store (the store is ephemeral by design anyway).
-                # If it OOMs repeatedly, systemd's default start-rate limit trips
-                # and leaves it stopped — i.e. the system shuts it down for good
+                # Cap the cgroup so a burst of large GPX parses can't take the
+                # box down. On hitting MemoryMax the kernel OOM-kills the service;
+                # OOMPolicy kills the whole cgroup and Restart=on-failure brings
+                # it back — data survives in postgres. If it OOMs repeatedly,
+                # systemd's default start-rate limit trips and leaves it stopped
                 # until you intervene, rather than thrashing.
                 MemoryHigh = cfg.memoryHigh;
                 MemoryMax = cfg.memoryMax;
                 OOMPolicy = "kill";
                 # CPU ceiling so a burst of GPX parses can't starve co-tenants.
                 CPUQuota = cfg.cpuQuota;
-                # Storage is in-memory, so the service is stateless and needs no
-                # writable paths — run it locked down under a throwaway user.
+                # DynamicUser is load-bearing, not just hardening: it creates a
+                # transient system user literally named "klym", and peer auth over
+                # the unix socket maps that name onto the "klym" postgres role.
+                # That is the whole authentication story — don't swap it for a
+                # static User= without also giving the role a password.
+                # The process still writes nothing to disk, so it stays locked
+                # down; anything that ever needs scratch space wants
+                # StateDirectory, not an ad-hoc path.
                 DynamicUser = true;
                 ProtectSystem = "strict";
                 ProtectHome = true;

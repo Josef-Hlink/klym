@@ -3,11 +3,16 @@ import { dev } from '$app/environment';
 import { randomUUID } from 'node:crypto';
 
 const COOKIE = 'klym_sid';
+// Storage is durable now (postgres, see src/lib/server/storage.ts), so the
+// cookie has to outlive the browser session or the rows survive a redeploy but
+// the id that points at them doesn't. A year of idle; db.ts sweeps owners that
+// go quiet for 90 days.
+const COOKIE_MAX_AGE_S = 365 * 24 * 60 * 60;
 
 // Assign every visitor an anonymous id and expose it as locals.owner, which
-// scopes all storage (src/lib/server/storage.ts). No max-age, so it's a
-// session cookie: the browser drops it when the session ends, which together
-// with the server-side idle sweep is what makes routes vanish after a visit.
+// scopes all storage (src/lib/server/storage.ts). The cookie is persistent:
+// a returning visitor gets their own routes back, which is the point of the
+// move off the in-memory store.
 export const handle: Handle = async ({ event, resolve }) => {
 	// The Garmin device endpoint is token-authed and cookie-less: minting a
 	// session per fetch would leak phantom sessions into storage, and the
@@ -24,6 +29,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 			path: '/',
 			httpOnly: true,
 			sameSite: 'lax',
+			maxAge: COOKIE_MAX_AGE_S,
 			secure: !dev // allow plain-http on the dev port; require https in prod
 		});
 	}
