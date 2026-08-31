@@ -592,7 +592,7 @@
 								autofocus
 								autocomplete="off"
 								bind:value={saveName}
-								placeholder="Segment name (e.g. Hohneck climb)"
+								placeholder="Segment name (e.g. Alpe d'Huez climb)"
 								class="flex-1 rounded-md border border-neutral-300 px-3 py-1.5 text-sm focus:border-neutral-900 focus:outline-none"
 							/>
 							<input type="hidden" name="startDistM" value={crop?.startM ?? ''} />
