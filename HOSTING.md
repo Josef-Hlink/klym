@@ -129,17 +129,16 @@ nix build .#default
 ```
 
 Paste that `got:` value into `flake.nix` (`pnpmDeps.hash`), then `nix build`
-again to confirm it succeeds. **Commit the hash.** Redo this only when
-`pnpm-lock.yaml` changes.
+again to confirm it succeeds. **Commit the hash.** Redo this whenever
+`pnpm-lock.yaml` changes, a `nix flake update` moves nixpkgs' default `pnpm` to
+a new major, or `fetcherVersion` changes: the hash covers all three.
 
-> **Don't "fix" the pnpm deprecation warnings.** The flake pins
-> `pnpm_10.configHook` + `fetcherVersion = 1` on purpose. Migrating to the
-> top-level `fetchPnpmDeps` / `fetcherVersion = 3` breaks on nixpkgs whose
-> default `pnpm` is v11: the config hook can't find `.fetcher-version`, falls
-> back to v1, and pnpm 11 then can't read the v1 store
-> (`ERR_PNPM_NO_OFFLINE_TARBALL`). The pinned hook bundles its own pnpm, so
-> fetch and install stay consistent. See the comment in `flake.nix`; revisit
-> once that path stabilises (the warnings are harmless until the 26.11 release).
+> **A stale hash doesn't fail the fetch.** Nix finds an existing output with
+> that hash and reuses it, so the mismatch only surfaces later in
+> `pnpmConfigHook` as `ERR_PNPM_NO_OFFLINE_TARBALL`. Always regenerate via
+> `lib.fakeHash` rather than reusing the old value. The flake uses the
+> top-level `fetchPnpmDeps` (`fetcherVersion = 3`) and `pnpmConfigHook` with
+> nixpkgs' default `pnpm`; see the comment in `flake.nix`.
 
 ## Step 3 — Add klym to your system flake
 

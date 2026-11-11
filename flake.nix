@@ -37,30 +37,31 @@
 
             nativeBuildInputs = [
               pkgs.nodejs_24
-              pkgs.pnpm_10.configHook
+              pkgs.pnpm
+              pkgs.pnpmConfigHook
             ];
 
-            # Reproducible offline pnpm store. The hash pins the resolved
-            # dependency tree; it MUST be refreshed whenever pnpm-lock.yaml
-            # changes — set it to `pkgs.lib.fakeHash`, build, and paste back
-            # the "got: sha256-…" value Nix prints.
+            # Reproducible offline pnpm store, fetched by fetchPnpmDeps as a
+            # fetcherVersion 3 tarball and unpacked by pnpmConfigHook. Both use
+            # nixpkgs' default `pkgs.pnpm` (11 at the current pin): the fetcher
+            # takes it as its default `pnpm` argument, the hook finds it on PATH
+            # via nativeBuildInputs. They must stay the same major, because the
+            # store layout is pnpm-major-specific.
             #
-            # Deliberately the version-pinned pnpm_10 API + fetcherVersion 1.
-            # The top-level fetchPnpmDeps/pnpmConfigHook + fetcherVersion 3 path
-            # breaks on nixpkgs' default pnpm 11: the config hook can't find
-            # .fetcher-version, falls back to v1, and pnpm 11 then can't read the
-            # v1 store (ERR_PNPM_NO_OFFLINE_TARBALL). pnpm_10.configHook bundles
-            # its own pnpm so fetch and install stay consistent. Revisit once
-            # that path stabilises; the deprecation warnings are harmless until
-            # the 26.11 release.
-            pnpmDeps = pkgs.pnpm_10.fetchDeps {
+            # The hash covers the lockfile, the pnpm major and the fetcher
+            # format, so refresh it whenever pnpm-lock.yaml changes, a nixpkgs
+            # bump moves the default pnpm major, or fetcherVersion changes: set
+            # it to `pkgs.lib.fakeHash`, build, and paste back the
+            # "got: sha256-…" value Nix prints. A stale hash doesn't fail the
+            # fetch. Nix silently reuses the old output, and the mismatch only
+            # shows up in pnpmConfigHook as ERR_PNPM_NO_OFFLINE_TARBALL.
+            pnpmDeps = pkgs.fetchPnpmDeps {
               inherit (finalAttrs) pname version src;
-              fetcherVersion = 1;
-              # Regenerated 2026-08-24 when pnpm-lock.yaml gained `postgres`.
+              fetcherVersion = 3;
               # There is no darwin package output, so this builds on the remote
               # linux builder (ssh-ng://nixbuilder@esther) — `nix build
               # .#packages.x86_64-linux.default` from the laptop is enough.
-              hash = "sha256-sgsnFE1yzs5iAnQjt/ek9n5lL9C8MTQOCfvNFdKrhGE=";
+              hash = "sha256-Y8J5Mkyla9nQz/zs4m35hMVlTIfAslaVyCANPhvH41k=";
             };
 
             buildPhase = ''
