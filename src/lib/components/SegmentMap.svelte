@@ -26,6 +26,16 @@
 	import { buildScene, type SceneOp } from '$lib/topo/scene.js';
 	import { computeVisibility, visibleAtDist } from '$lib/topo/visibility.js';
 	import {
+		classifyTwoFinger,
+		pairFrame,
+		pinchViewport,
+		twistYaw,
+		TWIST_DEAD_ZONE,
+		angleDelta,
+		type Pt,
+		type TwoFingerMode
+	} from '$lib/topo/touch.js';
+	import {
 		clampDataAspect,
 		computeDimensions,
 		computeRefFrame,
@@ -80,6 +90,10 @@
 	const STROKE = 6;
 	const DRAG_THRESHOLD_PX = 4;
 	const HOVER_PX = 24;
+	// A fingertip is fatter than a cursor: snap to the route from further out.
+	const HOVER_PX_TOUCH = 40;
+	// Lift the readout clear of the finger that's reading it.
+	const TOOLTIP_LIFT_TOUCH = 48;
 	// Window (metres) for the hover tooltip's "precise" grade. Centred on
 	// distM, so the grade is averaged over distM ± HOVER_GRADE_WINDOW_M / 2.
 	// Larger = smoother, fewer per-GPX-point spikes; smaller = more local.
@@ -153,6 +167,16 @@
 	// User-resized height (px). null = use data-derived aspect.
 	let userHeight = $state<number | null>(null);
 	let wrapperWidth = $state(0);
+	// On a phone the data aspect (≥ 1.5 : 1) leaves a ~220px strip; give it a
+	// near-square default so a tilted 3D view has room to stand up in.
+	const NARROW_BELOW_PX = 640;
+	const NARROW_ASPECT = 1.15;
+	const autoHeight = $derived(
+		!userHeight && wrapperWidth > 0 && wrapperWidth < NARROW_BELOW_PX
+			? Math.round(wrapperWidth / NARROW_ASPECT)
+			: null
+	);
+	const boxHeight = $derived(userHeight ?? autoHeight);
 
 	// Cached on-screen rects for the canvas and the wrapper.
 	// getBoundingClientRect forces a synchronous style/layout flush; calling
@@ -176,7 +200,7 @@
 	}
 	// Widget resize (userHeight) and responsive width both move/resize the rect.
 	$effect(() => {
-		userHeight;
+		boxHeight;
 		wrapperWidth;
 		invalidateRects();
 	});
@@ -198,16 +222,67 @@
 	let mapSource = $state<MapSource>('osm');
 	const SOURCES: MapSource[] = ['osm', 'topo', 'sat', 'proto'];
 
+	// The control popovers open on hover for a mouse. A finger has no hover
+	// (its pointerenter fires on touch-down and pointerleave on lift), so on
+	// touch the buttons toggle their popover instead and a tap outside closes
+	// it. controlPointer remembers what pressed the last control.
+	let controlPointer = $state<string>('mouse');
+	const touchControls = $derived(controlPointer === 'touch');
+	function onControlsPointerDown(e: PointerEvent) {
+		e.stopPropagation();
+		controlPointer = e.pointerType;
+	}
+	function closeTouchPopovers() {
+		showMapMenu = false;
+		showTerrainPopover = false;
+		showVertPopover = false;
+	}
+	$effect(() => {
+		if (!touchControls || !(showMapMenu || showTerrainPopover || showVertPopover)) return;
+		const handler = (e: PointerEvent) => {
+			const t = e.target as Element | null;
+			if (!t?.closest('[data-topo-controls]')) closeTouchPopovers();
+		};
+		document.addEventListener('pointerdown', handler, true);
+		return () => document.removeEventListener('pointerdown', handler, true);
+	});
+	function onMapButton() {
+		if (touchControls) {
+			const open = !showMapMenu;
+			closeTouchPopovers();
+			showMapMenu = open;
+		} else showMap = !showMap;
+	}
+	function onTerrainButton() {
+		if (touchControls) {
+			const open = !showTerrainPopover;
+			closeTouchPopovers();
+			showTerrainPopover = open;
+		} else terrainOn = !terrainOn;
+	}
+	function onVertButton() {
+		if (!touchControls) return;
+		const open = !showVertPopover;
+		closeTouchPopovers();
+		showVertPopover = open;
+	}
+	function pickSource(src: MapSource) {
+		mapSource = src;
+		showMap = true;
+	}
+
 	let showMapMenu = $state(false);
 	let mapMenuHideTimer: ReturnType<typeof setTimeout> | null = null;
-	function openMapMenu() {
+	function openMapMenu(e?: PointerEvent) {
+		if (e && e.pointerType !== 'mouse') return;
 		if (mapMenuHideTimer) {
 			clearTimeout(mapMenuHideTimer);
 			mapMenuHideTimer = null;
 		}
 		showMapMenu = true;
 	}
-	function closeMapMenu() {
+	function closeMapMenu(e?: PointerEvent) {
+		if (e && e.pointerType !== 'mouse') return;
 		if (mapMenuHideTimer) clearTimeout(mapMenuHideTimer);
 		mapMenuHideTimer = setTimeout(() => {
 			showMapMenu = false;
@@ -217,14 +292,16 @@
 
 	let showTerrainPopover = $state(false);
 	let terrainHideTimer: ReturnType<typeof setTimeout> | null = null;
-	function openTerrainPopover() {
+	function openTerrainPopover(e?: PointerEvent) {
+		if (e && e.pointerType !== 'mouse') return;
 		if (terrainHideTimer) {
 			clearTimeout(terrainHideTimer);
 			terrainHideTimer = null;
 		}
 		showTerrainPopover = true;
 	}
-	function closeTerrainPopover() {
+	function closeTerrainPopover(e?: PointerEvent) {
+		if (e && e.pointerType !== 'mouse') return;
 		if (terrainHideTimer) clearTimeout(terrainHideTimer);
 		terrainHideTimer = setTimeout(() => {
 			showTerrainPopover = false;
@@ -234,14 +311,16 @@
 
 	let showVertPopover = $state(false);
 	let vertHideTimer: ReturnType<typeof setTimeout> | null = null;
-	function openVert() {
+	function openVert(e?: PointerEvent) {
+		if (e && e.pointerType !== 'mouse') return;
 		if (vertHideTimer) {
 			clearTimeout(vertHideTimer);
 			vertHideTimer = null;
 		}
 		showVertPopover = true;
 	}
-	function closeVert() {
+	function closeVert(e?: PointerEvent) {
+		if (e && e.pointerType !== 'mouse') return;
 		if (vertHideTimer) clearTimeout(vertHideTimer);
 		// Small delay so the cursor can travel from button to popover (or back)
 		// without the popover snapping shut mid-transit.
@@ -283,7 +362,7 @@
 	// Live canvas aspect: dataAspect by default, but the wrapper aspect once
 	// the user has manually resized so the SVG fills without letterboxing.
 	const canvasAspect = $derived(
-		userHeight && wrapperWidth ? wrapperWidth / userHeight : dataAspect
+		boxHeight && wrapperWidth ? wrapperWidth / boxHeight : dataAspect
 	);
 
 	const dimensions = $derived(computeDimensions(refFrame, canvasAspect));
@@ -605,7 +684,7 @@
 		// CSS size from reactive state, not layout reads: width tracks the
 		// wrapper, height is the user height or the data aspect.
 		const cssW = wrapperWidth;
-		const cssH = userHeight ?? (dimensions.W > 0 ? (cssW * dimensions.H) / dimensions.W : 0);
+		const cssH = boxHeight ?? (dimensions.W > 0 ? (cssW * dimensions.H) / dimensions.W : 0);
 		if (cssW <= 0 || cssH <= 0) return;
 		const devW = Math.max(1, Math.round(cssW * dpr));
 		const devH = Math.max(1, Math.round(cssH * dpr));
@@ -647,7 +726,7 @@
 		viewport;
 		dimensions;
 		wrapperWidth;
-		userHeight;
+		boxHeight;
 		groundTexture;
 		tileImage;
 		dpr;
@@ -690,6 +769,10 @@
 	}
 
 	function onPointerDown(e: PointerEvent) {
+		if (e.pointerType === 'touch') {
+			onTouchDown(e);
+			return;
+		}
 		if (e.button !== 0 || !viewport) return;
 		// Ctrl/Cmd on pointerdown opens contextmenu by default on some platforms;
 		// preventDefault keeps our handler in control.
@@ -783,9 +866,13 @@
 		document.body.style.cursor = '';
 	}
 
-	let hoverInfo = $state<{ distM: number; cursorX: number; cursorY: number } | null>(
-		null
-	);
+	let hoverInfo = $state<{
+		distM: number;
+		cursorX: number;
+		cursorY: number;
+		touch: boolean;
+	} | null>(null);
+	let tooltipW = $state(0);
 
 	$effect(() => {
 		hoverDistM = hoverInfo?.distM ?? null;
@@ -799,13 +886,21 @@
 	}
 
 	function onWrapperPointerMove(e: PointerEvent) {
+		if (e.pointerType === 'touch') {
+			onTouchMove(e);
+			return;
+		}
 		if (isDragging) return;
+		hoverAt(e.clientX, e.clientY, false);
+	}
+
+	function hoverAt(clientX: number, clientY: number, touch: boolean) {
 		if (!canvasEl || !wrapperEl || !viewport || projectedPoints.length < 2) return;
 		const svgR = surfaceRect();
 		const wrapR = wrapRect();
 		if (!svgR || !wrapR || svgR.width <= 0) return;
-		const relX = (e.clientX - svgR.left) / svgR.width;
-		const relY = (e.clientY - svgR.top) / svgR.height;
+		const relX = (clientX - svgR.left) / svgR.width;
+		const relY = (clientY - svgR.top) / svgR.height;
 		const svgX = viewport.x + relX * viewport.w;
 		const svgY = viewport.y + relY * viewport.h;
 
@@ -836,30 +931,155 @@
 			}
 		}
 		const svgPerPx = viewport.w / svgR.width;
-		const thresholdSvg = HOVER_PX * svgPerPx;
+		const thresholdSvg = (touch ? HOVER_PX_TOUCH : HOVER_PX) * svgPerPx;
 		if (bestSeg >= 0 && bestDist <= thresholdSvg) {
 			const a = slicedPoints[bestSeg];
 			const b = slicedPoints[bestSeg + 1];
 			const distM = a.cumDistM + bestT * (b.cumDistM - a.cumDistM);
 			hoverInfo = {
 				distM,
-				cursorX: e.clientX - wrapR.left,
-				cursorY: e.clientY - wrapR.top
+				cursorX: clientX - wrapR.left,
+				cursorY: clientY - wrapR.top,
+				touch
 			};
 		} else {
 			hoverInfo = null;
 		}
 	}
 
-	function onWrapperPointerLeave() {
+	function onWrapperPointerLeave(e: PointerEvent) {
+		// A finger "leaves" when it lifts; its reading stays until a touch
+		// lands elsewhere (see onOutsidePointerDown).
+		if (e.pointerType === 'touch') return;
 		if (!isDragging) hoverInfo = null;
 		// Re-read the rect on the next enter — layout above the widget may have
 		// shifted while the pointer was away.
 		invalidateRects();
 	}
 
+	// ---- Touch ----------------------------------------------------------
+	// One finger: the page keeps vertical swipes (touch-action: pan-y); a
+	// tap or a sideways drag reads the route under the finger. Two fingers:
+	// the camera (topo/touch.ts) — pinch zooms, the midpoint pans, a twist
+	// turns, and in 3D a parallel vertical slide tilts.
+	const touches = new Map<number, Pt>();
+	type TwoStart = {
+		ids: [number, number];
+		pts: [Pt, Pt];
+		frame: ReturnType<typeof pairFrame>;
+		rel0: Pt;
+		vp0: Viewport;
+		pitch0: number;
+		mode: TwoFingerMode;
+		twist: { yaw: number; angle: number } | null;
+	};
+	let touchGesture: { kind: 'scrub' } | ({ kind: 'two' } & TwoStart) | { kind: 'done' } | null =
+		null;
+	let touchHeld = false;
+	let usedTwoFingers = $state(false);
+
+	function onTouchDown(e: PointerEvent) {
+		cancelToggleAnim();
+		invalidateRects();
+		touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+		if (touches.size === 1) {
+			touchGesture = { kind: 'scrub' };
+			touchHeld = true;
+			hoverAt(e.clientX, e.clientY, true);
+		} else if (touches.size === 2 && viewport) {
+			const ids = [...touches.keys()] as [number, number];
+			const pts: [Pt, Pt] = [touches.get(ids[0])!, touches.get(ids[1])!];
+			const frame = pairFrame(pts[0], pts[1]);
+			const rect = surfaceRect();
+			if (!rect || rect.width <= 0) return;
+			hoverInfo = null;
+			touchGesture = {
+				kind: 'two',
+				ids,
+				pts: [{ ...pts[0] }, { ...pts[1] }],
+				frame,
+				rel0: { x: (frame.cx - rect.left) / rect.width, y: (frame.cy - rect.top) / rect.height },
+				vp0: { ...viewport },
+				pitch0: pitch,
+				mode: 'undecided',
+				twist: null
+			};
+		} else {
+			touchGesture = { kind: 'done' };
+		}
+	}
+
+	function onTouchMove(e: PointerEvent) {
+		if (!touches.has(e.pointerId)) return;
+		touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+		const g = touchGesture;
+		if (!g) return;
+		if (g.kind === 'scrub') {
+			hoverAt(e.clientX, e.clientY, true);
+			return;
+		}
+		if (g.kind !== 'two') return;
+		const a = touches.get(g.ids[0]);
+		const b = touches.get(g.ids[1]);
+		if (!a || !b) return;
+		if (g.mode === 'undecided') {
+			g.mode = classifyTwoFinger(g.pts, [a, b], is3D);
+			if (g.mode === 'undecided') return;
+			usedTwoFingers = true;
+		}
+		const f = pairFrame(a, b);
+		if (g.mode === 'tilt') {
+			pitch = Math.max(0, Math.min(PITCH_MAX, g.pitch0 + (f.cy - g.frame.cy) * PITCH_PER_PX));
+			return;
+		}
+		if (!g.twist && Math.abs(angleDelta(g.frame.angle, f.angle)) > TWIST_DEAD_ZONE) {
+			g.twist = { yaw, angle: f.angle };
+		}
+		if (g.twist) yaw = twistYaw(g.twist.yaw, g.twist.angle, f.angle);
+		const rect = surfaceRect();
+		if (!rect || rect.width <= 0) return;
+		viewport = pinchViewport(
+			g.vp0,
+			dimensions,
+			g.rel0,
+			{ x: (f.cx - rect.left) / rect.width, y: (f.cy - rect.top) / rect.height },
+			g.frame.dist,
+			f.dist
+		);
+	}
+
+	function onTouchEnd(e: PointerEvent) {
+		if (e.pointerType !== 'touch') return;
+		touches.delete(e.pointerId);
+		// The browser took the gesture for scrolling: drop the reading.
+		if (e.type === 'pointercancel' && touchGesture?.kind === 'scrub') {
+			hoverInfo = null;
+			touchHeld = false;
+		}
+		if (touches.size === 0) touchGesture = null;
+		// One finger of a pair lifting doesn't turn the rest into a scrub.
+		else if (touchGesture?.kind === 'two') touchGesture = { kind: 'done' };
+	}
+
+	function onOutsidePointerDown(e: PointerEvent) {
+		if (touchHeld && wrapperEl && !wrapperEl.contains(e.target as Node)) {
+			touchHeld = false;
+			hoverInfo = null;
+		}
+	}
+
+	// touch-action: pan-y also lets the browser pan the page under a
+	// two-finger vertical slide — which is our tilt. Claim any multi-touch
+	// move before the browser commits to scrolling.
+	function onTouchMoveNative(e: TouchEvent) {
+		if (e.touches.length >= 2 && e.cancelable) e.preventDefault();
+	}
+	// ---------------------------------------------------------------------
+
 	onMount(() => {
 		wrapperEl?.addEventListener('wheel', onWheel, { passive: false });
+		wrapperEl?.addEventListener('touchmove', onTouchMoveNative, { passive: false });
+		document.addEventListener('pointerdown', onOutsidePointerDown, true);
 		// Any scroll (capture: also catches scrollable ancestors) or window
 		// resize moves the cached rect; drop it so the next read is fresh.
 		window.addEventListener('scroll', invalidateRects, { capture: true, passive: true });
@@ -870,6 +1090,8 @@
 
 	onDestroy(() => {
 		wrapperEl?.removeEventListener('wheel', onWheel);
+		wrapperEl?.removeEventListener('touchmove', onTouchMoveNative);
+		document.removeEventListener('pointerdown', onOutsidePointerDown, true);
 		window.removeEventListener('scroll', invalidateRects, { capture: true });
 		window.removeEventListener('resize', invalidateRects);
 		document.removeEventListener('pointermove', onDocPointerMove);
@@ -891,12 +1113,14 @@
 <div
 	bind:this={wrapperEl}
 	bind:clientWidth={wrapperWidth}
-	class="relative select-none bg-neutral-100"
-	style:height={userHeight ? `${userHeight}px` : undefined}
+	class="relative touch-pan-y select-none bg-neutral-100"
+	style:height={boxHeight ? `${boxHeight}px` : undefined}
 	oncontextmenu={(e) => e.preventDefault()}
 	onpointerdown={onPointerDown}
 	onpointermove={onWrapperPointerMove}
 	onpointerleave={onWrapperPointerLeave}
+	onpointerup={onTouchEnd}
+	onpointercancel={onTouchEnd}
 >
 	<!-- The painter: one bitmap, repainted per frame from the scene ops
 	     (paint order lives in scene.ts, locked by its tests). CSS
@@ -905,14 +1129,20 @@
 	<canvas
 		bind:this={canvasEl}
 		class="block w-full"
-		class:h-full={!!userHeight}
-		style:aspect-ratio={userHeight ? undefined : `${dimensions.W} / ${dimensions.H}`}
+		class:h-full={!!boxHeight}
+		style:aspect-ratio={boxHeight ? undefined : `${dimensions.W} / ${dimensions.H}`}
 	></canvas>
 
 	<div
 		class="pointer-events-none absolute left-2 top-2 z-30 rounded-md bg-white/90 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-neutral-600 shadow-sm"
 	>
 		Topo
+		{#if !usedTwoFingers}
+			<!-- one finger scrolls the page, so say how to move the map -->
+			<span class="hidden normal-case tracking-normal text-neutral-500 pointer-coarse:inline"
+				>· two fingers to move{is3D ? ' or tilt' : ''}</span
+			>
+		{/if}
 	</div>
 
 	{#if isViewModified}
@@ -967,15 +1197,16 @@
 	{/snippet}
 
 	<div
-		onpointerdown={(e) => e.stopPropagation()}
+		data-topo-controls
+		onpointerdown={onControlsPointerDown}
 		class="absolute bottom-2 left-2 z-30 flex items-center gap-0.5 rounded-md bg-white/90 px-1 py-0.5 shadow-sm"
 	>
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="relative" onpointerenter={openMapMenu} onpointerleave={closeMapMenu}>
 			<button
 				type="button"
-				onclick={() => (showMap = !showMap)}
-				class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 {showMap
+				onclick={onMapButton}
+				class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 pointer-coarse:h-9 pointer-coarse:w-9 {showMap
 					? 'text-neutral-800'
 					: 'text-neutral-300'}"
 				aria-label="Toggle map"
@@ -991,12 +1222,25 @@
 					onpointerleave={closeMapMenu}
 					class="absolute bottom-full left-[-0.25rem] mb-1 flex gap-0.5 rounded-md bg-white px-1 py-0.5 shadow-lg ring-1 ring-neutral-200"
 				>
+					{#if touchControls}
+						<button
+							type="button"
+							onclick={() => (showMap = !showMap)}
+							class="flex h-9 items-center justify-center rounded px-2 text-[11px] font-medium hover:bg-neutral-100 {showMap
+								? 'text-neutral-400'
+								: 'text-neutral-800'}"
+							aria-pressed={!showMap}
+							title={showMap ? 'Hide map' : 'Show map'}
+						>
+							Off
+						</button>
+					{/if}
 					{#each SOURCES as src (src)}
 						<button
 							type="button"
-							onclick={() => (mapSource = src)}
-							class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 {mapSource ===
-							src
+							onclick={() => pickSource(src)}
+							class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 pointer-coarse:h-9 pointer-coarse:w-9 {showMap &&
+							mapSource === src
 								? 'text-neutral-800'
 								: 'text-neutral-300'}"
 							aria-label={TILE_SOURCES[src].label}
@@ -1012,14 +1256,15 @@
 	</div>
 
 	<div
-		onpointerdown={(e) => e.stopPropagation()}
-		class="absolute bottom-2 right-2 z-30 flex items-center gap-0.5 rounded-md bg-white/90 px-1 py-0.5 shadow-sm"
+		data-topo-controls
+		onpointerdown={onControlsPointerDown}
+		class="absolute right-2 bottom-2 z-30 flex items-center gap-0.5 rounded-md bg-white/90 px-1 py-0.5 shadow-sm pointer-coarse:right-8"
 	>
 		{#if is3D}
 			<button
 				type="button"
 				onclick={() => (showAllDrapes = !showAllDrapes)}
-				class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 {showAllDrapes
+				class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 pointer-coarse:h-9 pointer-coarse:w-9 {showAllDrapes
 					? 'text-neutral-800'
 					: 'text-neutral-300'}"
 				aria-label="Toggle drapes"
@@ -1045,7 +1290,7 @@
 			<button
 				type="button"
 				onclick={() => (showAnchorLines = !showAnchorLines)}
-				class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 {showAnchorLines
+				class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 pointer-coarse:h-9 pointer-coarse:w-9 {showAnchorLines
 					? 'text-neutral-800'
 					: 'text-neutral-300'}"
 				aria-label="Toggle anchor lines"
@@ -1066,15 +1311,17 @@
 			</button>
 
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<!-- On touch the popovers hang off the toolbar (static wrapper), not
+			     their button, so the wide one fits inside a phone-width view. -->
 			<div
-				class="relative"
+				class="relative pointer-coarse:static"
 				onpointerenter={openTerrainPopover}
 				onpointerleave={closeTerrainPopover}
 			>
 				<button
 					type="button"
-					onclick={() => (terrainOn = !terrainOn)}
-					class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 {terrainOn
+					onclick={onTerrainButton}
+					class="flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-100 pointer-coarse:h-9 pointer-coarse:w-9 {terrainOn
 						? 'text-neutral-800'
 						: 'text-neutral-300'}"
 					aria-label="Toggle terrain"
@@ -1093,13 +1340,29 @@
 						<path d="m8 3 4 8 5-5 5 15H2L8 3z" />
 					</svg>
 				</button>
-				{#if showTerrainPopover && terrainOn}
+				{#if showTerrainPopover && (terrainOn || touchControls)}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						onpointerenter={openTerrainPopover}
 						onpointerleave={closeTerrainPopover}
-						class="absolute bottom-full right-0 mb-1 flex flex-col gap-2 rounded-md bg-white px-3 py-2 shadow-lg ring-1 ring-neutral-200"
+						class="absolute right-0 bottom-full mb-1 flex flex-col gap-2 rounded-md bg-white px-3 py-2 shadow-lg ring-1 ring-neutral-200 pointer-coarse:gap-3 pointer-coarse:py-3"
 					>
+						{#if touchControls}
+							<button
+								type="button"
+								onclick={() => (terrainOn = !terrainOn)}
+								aria-pressed={terrainOn}
+								class="flex h-8 items-center justify-between gap-3 rounded text-[11px] font-medium text-neutral-700"
+							>
+								Terrain
+								<span
+									class="rounded px-2 py-1 {terrainOn
+										? 'bg-neutral-900 text-white'
+										: 'bg-neutral-100 text-neutral-500'}">{terrainOn ? 'On' : 'Off'}</span
+								>
+							</button>
+						{/if}
+						{#if terrainOn}
 						<label class="flex items-center gap-2 text-[10px] font-medium text-neutral-600">
 							<span class="w-10">Float</span>
 							<input
@@ -1108,7 +1371,7 @@
 								max="50"
 								step="1"
 								bind:value={floatM}
-								class="w-28 accent-neutral-900"
+								class="w-28 accent-neutral-900 pointer-coarse:w-36"
 								aria-label="Route float height above terrain"
 							/>
 							<span class="w-8 text-right tabular-nums">{floatM}m</span>
@@ -1121,24 +1384,26 @@
 								max="1"
 								step="0.05"
 								bind:value={terrainOpacity}
-								class="w-28 accent-neutral-900"
+								class="w-28 accent-neutral-900 pointer-coarse:w-36"
 								aria-label="Terrain opacity"
 							/>
 							<span class="w-8 text-right tabular-nums">{Math.round(terrainOpacity * 100)}%</span>
 						</label>
+						{/if}
 					</div>
 				{/if}
 			</div>
 
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
-				class="relative"
+				class="relative pointer-coarse:static"
 				onpointerenter={openVert}
 				onpointerleave={closeVert}
 			>
 				<button
 					type="button"
-					class="flex h-7 w-7 items-center justify-center rounded text-[10px] font-semibold tabular-nums text-neutral-800 hover:bg-neutral-100"
+					onclick={onVertButton}
+					class="flex h-7 w-7 items-center justify-center rounded text-[10px] font-semibold tabular-nums text-neutral-800 hover:bg-neutral-100 pointer-coarse:h-9 pointer-coarse:w-9"
 					aria-label="Vertical exaggeration"
 					title="Vertical exaggeration"
 				>
@@ -1158,7 +1423,7 @@
 							step="0.5"
 							bind:value={zExaggeration}
 							style="writing-mode: vertical-lr; direction: rtl;"
-							class="h-28 w-4 accent-neutral-900"
+							class="h-28 w-4 accent-neutral-900 pointer-coarse:h-36 pointer-coarse:w-6"
 							aria-label="Vertical exaggeration"
 						/>
 					</div>
@@ -1168,7 +1433,7 @@
 		<button
 			type="button"
 			onclick={toggle3D}
-			class="flex h-7 w-7 items-center justify-center rounded text-[11px] font-semibold tabular-nums text-neutral-800 hover:bg-neutral-100"
+			class="flex h-7 w-7 items-center justify-center rounded text-[11px] font-semibold tabular-nums text-neutral-800 hover:bg-neutral-100 pointer-coarse:h-9 pointer-coarse:w-9"
 			aria-label={is3D ? 'Switch to 2D' : 'Switch to 3D'}
 			title={is3D ? 'Switch to 2D' : 'Switch to 3D'}
 		>
@@ -1185,10 +1450,20 @@
 		{@const wB = findPointAtDistance(points, hoverInfo.distM + halfW)}
 		{@const wRun = wB.cumDistM - wA.cumDistM}
 		{@const localGrade = wRun > 0 ? ((wB.ele - wA.ele) / wRun) * 100 : 0}
+		{@const half = tooltipW / 2}
+		{@const tipX =
+			wrapperWidth > 0 && tooltipW > 0
+				? Math.max(half + 4, Math.min(wrapperWidth - half - 4, hoverInfo.cursorX))
+				: hoverInfo.cursorX}
+		{@const tipY = Math.max(
+			40,
+			hoverInfo.cursorY - (hoverInfo.touch ? TOOLTIP_LIFT_TOUCH : 12)
+		)}
 		<div
+			bind:clientWidth={tooltipW}
 			class="pointer-events-none absolute z-10 flex -translate-x-1/2 -translate-y-full items-center gap-1.5 whitespace-nowrap rounded-md bg-neutral-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-lg"
-			style:left="{hoverInfo.cursorX}px"
-			style:top="{hoverInfo.cursorY - 12}px"
+			style:left="{tipX}px"
+			style:top="{tipY}px"
 		>
 			<span class="tabular-nums">{fmtKm(distAlong)}</span>
 			<span class="text-neutral-500">·</span>
@@ -1214,7 +1489,7 @@
 		role="separator"
 		aria-label="Resize map"
 		onpointerdown={onResizeDown}
-		class="absolute bottom-0 right-0 z-30 h-4 w-4 cursor-nwse-resize text-neutral-500 hover:text-neutral-800"
+		class="absolute right-0 bottom-0 z-30 h-4 w-4 cursor-nwse-resize touch-none text-neutral-500 hover:text-neutral-800 pointer-coarse:h-7 pointer-coarse:w-7 pointer-coarse:p-1"
 	>
 		<svg
 			xmlns="http://www.w3.org/2000/svg"
