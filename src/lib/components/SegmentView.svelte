@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount, tick } from 'svelte';
 	import SegmentProfile, {
 		type GradeLabelMode,
 		type ProfileMode
@@ -91,15 +92,63 @@
 	let copiedFlash = $state(false);
 	let exportMenuEl: HTMLDivElement | null = $state(null);
 
+	// On a phone the on-screen profile is the compact layout; exports are
+	// always the full 1600×800 image, so they come from an offscreen copy
+	// mounted just for the export.
+	let exportCopy = $state(false);
+	let exportCopyEl: SVGSVGElement | null = $state(null);
+	async function exportSvg(): Promise<SVGSVGElement> {
+		if (svgEl && svgEl.viewBox.baseVal.width === 1600) return svgEl;
+		exportCopy = true;
+		await tick();
+		if (!exportCopyEl) throw new Error('Export image unavailable');
+		return exportCopyEl;
+	}
+
+	// The PNG starts rendering when the menu opens: copy and share must be
+	// called inside the tap that asked for them (iOS refuses them after an
+	// await), so by then the blob should already be waiting.
+	let pngReady: Promise<Blob> | null = null;
+	async function renderPng(): Promise<Blob> {
+		try {
+			return await svgToPngBlob(await exportSvg());
+		} finally {
+			exportCopy = false;
+		}
+	}
+	function toggleExportMenu() {
+		exportMenuOpen = !exportMenuOpen;
+		if (exportMenuOpen) {
+			pngReady = renderPng();
+			pngReady.catch(() => {});
+		}
+	}
+	function takePng(): Promise<Blob> {
+		const p = pngReady ?? renderPng();
+		pngReady = null;
+		return p;
+	}
+
+	let canShareFiles = $state(false);
+	onMount(() => {
+		try {
+			canShareFiles =
+				typeof navigator.canShare === 'function' &&
+				navigator.canShare({ files: [new File([''], 'x.png', { type: 'image/png' })] });
+		} catch {
+			canShareFiles = false;
+		}
+	});
+
 	$effect(() => {
 		if (!exportMenuOpen) return;
-		const handler = (e: MouseEvent) => {
+		const handler = (e: PointerEvent) => {
 			if (exportMenuEl && !exportMenuEl.contains(e.target as Node)) {
 				exportMenuOpen = false;
 			}
 		};
-		document.addEventListener('mousedown', handler);
-		return () => document.removeEventListener('mousedown', handler);
+		document.addEventListener('pointerdown', handler);
+		return () => document.removeEventListener('pointerdown', handler);
 	});
 
 	function fmtBinLabel(m: number): string {
@@ -156,12 +205,11 @@
 	}
 
 	async function savePng() {
-		if (!svgEl) return;
 		exporting = true;
 		exportError = null;
 		exportMenuOpen = false;
 		try {
-			const blob = await svgToPngBlob(svgEl);
+			const blob = await takePng();
 			triggerDownload(blob, `${exportBase}.png`);
 		} catch (err) {
 			exportError = (err as Error).message ?? 'Export failed';
@@ -171,7 +219,6 @@
 	}
 
 	async function copyPng() {
-		if (!svgEl) return;
 		exporting = true;
 		exportError = null;
 		exportMenuOpen = false;
@@ -179,8 +226,9 @@
 			if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
 				throw new Error('Clipboard API not available in this browser');
 			}
-			const blob = await svgToPngBlob(svgEl);
-			await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+			// The item takes the blob as a promise, so write() is called
+			// synchronously inside the tap (Safari rejects it otherwise).
+			await navigator.clipboard.write([new ClipboardItem({ 'image/png': takePng() })]);
 			copiedFlash = true;
 			setTimeout(() => (copiedFlash = false), 1800);
 		} catch (err) {
@@ -190,13 +238,32 @@
 		}
 	}
 
-	async function saveSvg() {
-		if (!svgEl) return;
+	async function sharePng() {
 		exporting = true;
 		exportError = null;
 		exportMenuOpen = false;
 		try {
-			const xml = serializeSvg(svgEl);
+			const blob = await takePng();
+			const file = new File([blob], `${exportBase}.png`, { type: 'image/png' });
+			await navigator.share({ files: [file], title: name });
+		} catch (err) {
+			// Dismissing the share sheet is not an error.
+			if ((err as Error).name !== 'AbortError') {
+				exportError = (err as Error).message ?? 'Share failed';
+			}
+		} finally {
+			exporting = false;
+		}
+	}
+
+	async function saveSvg() {
+		exporting = true;
+		exportError = null;
+		exportMenuOpen = false;
+		pngReady = null;
+		try {
+			const xml = serializeSvg(await exportSvg());
+			exportCopy = false;
 			const blob = new Blob([xml], { type: 'image/svg+xml;charset=utf-8' });
 			triggerDownload(blob, `${exportBase}.svg`);
 		} catch (err) {
@@ -211,17 +278,17 @@
 	<title>{name} · {route.name} · klym</title>
 </svelte:head>
 
-<main class="mx-auto max-w-5xl px-6 py-10">
-	<div class="flex items-center justify-between">
-		<a href="/routes/{route.id}" class="text-sm text-neutral-500 hover:text-neutral-900"
+<main class="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-10">
+	<div class="flex items-center justify-between gap-3">
+		<a href="/routes/{route.id}" class="min-w-0 truncate text-sm text-neutral-500 hover:text-neutral-900"
 			>← {route.name}</a
 		>
 		<KlymBrand />
 	</div>
 	<header class="mt-4 mb-6 flex items-end justify-between gap-4">
-		<div>
-			<div class="flex items-center gap-2">
-				<h1 class="text-2xl font-semibold tracking-tight">{name}</h1>
+		<div class="min-w-0">
+			<div class="flex flex-wrap items-center gap-2">
+				<h1 class="min-w-0 break-words text-xl font-semibold tracking-tight sm:text-2xl">{name}</h1>
 				<ActivityBadge points={route.points} />
 			</div>
 			<p class="mt-1 text-xs text-neutral-500">
@@ -231,7 +298,7 @@
 		<div bind:this={exportMenuEl} class="relative">
 			<button
 				type="button"
-				onclick={() => (exportMenuOpen = !exportMenuOpen)}
+				onclick={toggleExportMenu}
 				disabled={exporting}
 				aria-haspopup="menu"
 				aria-expanded={exportMenuOpen}
@@ -260,7 +327,7 @@
 						type="button"
 						role="menuitem"
 						onclick={savePng}
-						class="block w-full px-3 py-2 text-left text-xs text-neutral-700 hover:bg-neutral-50"
+						class="block w-full px-3 py-2.5 text-left text-xs text-neutral-700 hover:bg-neutral-50 sm:py-2"
 					>
 						Save as PNG
 					</button>
@@ -268,15 +335,25 @@
 						type="button"
 						role="menuitem"
 						onclick={copyPng}
-						class="block w-full px-3 py-2 text-left text-xs text-neutral-700 hover:bg-neutral-50"
+						class="block w-full px-3 py-2.5 text-left text-xs text-neutral-700 hover:bg-neutral-50 sm:py-2"
 					>
 						Copy as PNG
 					</button>
+					{#if canShareFiles}
+						<button
+							type="button"
+							role="menuitem"
+							onclick={sharePng}
+							class="block w-full px-3 py-2.5 text-left text-xs text-neutral-700 hover:bg-neutral-50 sm:py-2"
+						>
+							Share image…
+						</button>
+					{/if}
 					<button
 						type="button"
 						role="menuitem"
 						onclick={saveSvg}
-						class="block w-full px-3 py-2 text-left text-xs text-neutral-700 hover:bg-neutral-50"
+						class="block w-full px-3 py-2.5 text-left text-xs text-neutral-700 hover:bg-neutral-50 sm:py-2"
 					>
 						Save as SVG
 					</button>
@@ -286,7 +363,7 @@
 	</header>
 
 	<div class="mb-4 rounded-lg border border-neutral-200 bg-white p-4">
-		<dl class="grid grid-cols-2 gap-4 text-sm sm:grid-cols-5">
+		<dl class="grid grid-cols-3 gap-3 text-sm sm:grid-cols-5 sm:gap-4">
 			<div>
 				<dt class="text-xs uppercase tracking-wide text-neutral-500">Length</dt>
 				<dd class="mt-1 text-lg font-medium">{fmtKm(stats.lengthM)}</dd>
@@ -353,7 +430,7 @@
 			</div>
 		</div>
 		{#if binMode === 'fixed'}
-			<div class="flex flex-1 items-center gap-3 min-w-64">
+			<div class="flex min-w-0 basis-full items-center gap-3 sm:min-w-64 sm:flex-1 sm:basis-auto">
 				<label for="bin-size" class="text-xs font-medium uppercase tracking-wide text-neutral-500">
 					Section length
 				</label>
@@ -364,12 +441,12 @@
 					max="1000"
 					step="50"
 					bind:value={binSizeM}
-					class="flex-1 accent-neutral-900"
+					class="min-w-0 flex-1 accent-neutral-900"
 				/>
-				<span class="w-20 text-right text-sm tabular-nums">{fmtBinLabel(binSizeM)}</span>
+				<span class="w-16 shrink-0 text-right text-sm tabular-nums sm:w-20">{fmtBinLabel(binSizeM)}</span>
 			</div>
 		{:else}
-			<div class="flex flex-1 items-center gap-3 min-w-64">
+			<div class="flex min-w-0 basis-full items-center gap-3 sm:min-w-64 sm:flex-1 sm:basis-auto">
 				<label for="epsilon" class="text-xs font-medium uppercase tracking-wide text-neutral-500">
 					Tolerance
 				</label>
@@ -380,9 +457,9 @@
 					max="25"
 					step="1"
 					bind:value={epsilonM}
-					class="flex-1 accent-neutral-900"
+					class="min-w-0 flex-1 accent-neutral-900"
 				/>
-				<span class="min-w-32 whitespace-nowrap text-right text-sm tabular-nums">±{epsilonM} m · {activeBins.length} sections</span>
+				<span class="shrink-0 whitespace-nowrap text-right text-sm tabular-nums sm:min-w-32">±{epsilonM} m · {activeBins.length}<span class="hidden sm:inline"> sections</span></span>
 			</div>
 		{/if}
 		</div>
@@ -482,6 +559,27 @@
 			externalHoverDistM={chartHoverDistM}
 		/>
 	</div>
+
+	{#if exportCopy}
+		<!-- Offscreen full-size copy for exports (see exportSvg). -->
+		<div class="pointer-events-none fixed top-0 -left-[4000px] w-[1600px]" aria-hidden="true">
+			<SegmentProfile
+				bind:svgEl={exportCopyEl}
+				layout="full"
+				static
+				points={route.points}
+				{startDistM}
+				{endDistM}
+				{binSizeM}
+				bins={activeBins}
+				{labelMode}
+				{profileMode}
+				{theme}
+				routeName={route.name}
+				sectionName={name}
+			/>
+		</div>
+	{/if}
 
 	{#if exportError}
 		<p class="mt-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700">{exportError}</p>
