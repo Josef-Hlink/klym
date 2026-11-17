@@ -24,6 +24,7 @@ when working *inside* this directory.
 | `scene.ts` | The paint order as data (pure): `buildScene(inputs) → SceneOp[]` reifies the layer order — including the occlusion interleave (solid runs → dots → front faces → ghost) — from the component's derived builder outputs. Never calls a builder itself, so each derived keeps its own recompute cadence. Images are string keys (`'ground'`/`'tile'`), resolved by paint.ts. |
 | `paint.ts` | DOM-touching `renderScene`: executes SceneOps on a 2D context with the `computeViewTransform` CTM baked in (lineWidth/dash/radii stay in viewBox units, like SVG stroke widths did). Owns the offscreen terrain-mesh layer: drawn once per (mesh, view, texture) key, composited at `globalAlpha = terrainOpacity` — group-opacity semantics AND a cache (hover repaints blit instead of re-clipping ~900 triangles). |
 | `viewport.ts` | Viewport pan/zoom math: `clampViewport`, `applyZoomAtCursor`, `isZoomedOrPanned`, `computeViewTransform` (viewBox → device px, xMidYMid-meet semantics). |
+| `touch.ts` | Two-finger gesture math (pure): `pairFrame`, `classifyTwoFinger` (transform vs tilt), `pinchViewport` (pinch + midpoint pan, world point under the fingers pinned), `twistYaw`. |
 
 Each pure module has a co-located `*.test.ts`. Run them with `pnpm test`.
 DOM-touching functions (`buildTileImage`, `buildVectorTileImage`,
