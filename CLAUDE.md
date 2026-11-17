@@ -455,6 +455,15 @@ The non-obvious bits worth knowing at the app level:
   userHeight` so the projection refits without letterboxing.
 - **Reset view** appears top-right when zoom/pan/rotation differ from
   defaults. Doesn't touch `zExaggeration` or saved 3D pose.
+- **Fullscreen** (top-right, beside Reset view): the browser's element
+  fullscreen where it exists, a `fixed inset-0` overlay where it doesn't
+  (iPhone). The box takes the visual viewport's height, the page can't
+  scroll underneath, a placeholder keeps the page's height and the scroll
+  position is restored on exit; Esc or the button leaves. In fullscreen one
+  finger pans (there's no page to scroll), a tap still reads.
+- **Shape changes keep the framing**: when `dimensions` change (fullscreen,
+  resize handle, rotation) `refitViewport` (viewport.ts) re-defaults a view
+  at rest and keeps a zoomed/panned one on the same content.
 
 ### Cross-component hover
 
@@ -545,10 +554,13 @@ taps, scrubs, pinches, twists, chip drags). The rules:
 - **Topo**: one finger = page scroll / route readout; two fingers =
   camera via the pure `src/lib/topo/touch.ts` (pinch zoom around the
   midpoint + midpoint pan, twist past a ~10° dead zone = yaw, and in 3D a
-  parallel vertical slide = tilt, Google-Maps style; the gesture locks
-  into one mode once it can tell). A non-passive `touchmove` listener
+  vertical slide = tilt, Google-Maps style). The mode is judged on the
+  pair's midpoint, spread and angle, not per finger (fingers start
+  staggered), and a gesture that committed to pan/zoom can still become a
+  tilt within its first 60px of travel (`regradeTwoFinger`; the pan, zoom
+  and any rotation a lagging finger caused are undone). A non-passive `touchmove` listener
   claims multi-touch moves, or `pan-y` would let the browser scroll under
-  the tilt. Popovers open on tap (`controlPointer` remembers what pressed
+  the tilt. In fullscreen one finger pans instead (`touch-none`). Popovers open on tap (`controlPointer` remembers what pressed
   a control) and hang off the toolbar; controls grow to 36px on
   `pointer-coarse:`. Default height is near-square below 640px.
 - Phone-only copy/sizing uses Tailwind's `pointer-coarse:` variant, not
