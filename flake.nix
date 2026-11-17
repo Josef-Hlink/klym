@@ -269,6 +269,8 @@
         {
           default = pkgs.mkShell {
             packages = [
+              pkgs.nodejs_24
+              pkgs.pnpm
               pkgs.jdk21
               pkgs.gpsbabel
             ];
