@@ -154,9 +154,20 @@
 		return `/routes/${route.id}/explore?${q}`;
 	}
 
+	let chartCardEl: HTMLDivElement | null = $state(null);
+	// The chart is only sticky from sm up; on a phone, loading markers from a
+	// row far down the list would happen off screen, so bring the chart back.
+	function revealChart() {
+		if (!chartCardEl || window.matchMedia('(min-width: 640px)').matches) return;
+		const r = chartCardEl.getBoundingClientRect();
+		if (r.top < 0 || r.bottom > window.innerHeight)
+			chartCardEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+	}
+
 	function selectClimb(c: DetectedClimb) {
 		markerA = c.startM;
 		markerB = c.endM;
+		revealChart();
 	}
 
 	function setSensitivity(preset: SensitivityPreset) {
@@ -295,6 +306,7 @@
 		};
 		markerA = seg.startDistM;
 		markerB = seg.endDistM;
+		revealChart();
 		savingMode = false;
 		saveName = '';
 		openSegMenuId = null;
@@ -312,12 +324,12 @@
 
 	$effect(() => {
 		if (openSegMenuId === null) return;
-		const handler = (e: MouseEvent) => {
+		const handler = (e: PointerEvent) => {
 			const t = e.target as HTMLElement | null;
 			if (!t?.closest('[data-seg-menu]')) openSegMenuId = null;
 		};
-		document.addEventListener('mousedown', handler);
-		return () => document.removeEventListener('mousedown', handler);
+		document.addEventListener('pointerdown', handler);
+		return () => document.removeEventListener('pointerdown', handler);
 	});
 
 	$effect(() => {
@@ -338,21 +350,26 @@
 	<title>{route.name} · klym</title>
 </svelte:head>
 
-<main class="mx-auto max-w-5xl px-6 py-10">
+<main class="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-10">
 	<div class="flex items-center justify-between">
 		<a href="/" class="text-sm text-neutral-500 hover:text-neutral-900">← All routes</a>
 		<KlymBrand />
 	</div>
-	<header class="mt-4 mb-6 flex items-end justify-between gap-4">
-		<div>
-			<div class="flex items-center gap-2">
-				<h1 class="text-2xl font-semibold tracking-tight">{route.name}</h1>
+	<!-- Phones stack the title over the stats; from sm they share a row. -->
+	<header
+		class="mt-4 mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between sm:gap-4"
+	>
+		<div class="min-w-0">
+			<div class="flex flex-wrap items-center gap-2">
+				<h1 class="min-w-0 break-words text-xl font-semibold tracking-tight sm:text-2xl">
+					{route.name}
+				</h1>
 				<ActivityBadge points={route.points} />
 			</div>
-			<p class="mt-1 text-xs text-neutral-500"><code>{route.id}</code></p>
+			<p class="mt-1 break-all text-xs text-neutral-500"><code>{route.id}</code></p>
 		</div>
-		<div class="flex flex-col items-end gap-1.5">
-			<dl class="flex gap-6 text-right">
+		<div class="flex flex-row items-center justify-between gap-1.5 sm:flex-col sm:items-end">
+			<dl class="flex gap-6 whitespace-nowrap sm:text-right">
 				<div>
 					<dt class="text-xs uppercase tracking-wide text-neutral-500">Distance</dt>
 					<dd class="text-base font-medium">{fmtKm(route.totalDistM)}</dd>
@@ -419,13 +436,19 @@
 			onRemoveMarker={previewing ? undefined : removeMarker}
 		/>
 
-		<div class="sticky top-0 z-20 rounded-lg border border-neutral-200 bg-white p-3 pt-2">
-			<div class="mb-1 flex items-center justify-between px-1 text-xs">
+		<div
+			bind:this={chartCardEl}
+			class="scroll-mt-2 rounded-lg border border-neutral-200 bg-white p-2 pt-2 sm:sticky sm:top-0 sm:z-20 sm:p-3"
+		>
+			<div class="mb-1 flex items-baseline justify-between gap-3 px-1 text-xs">
 				<span class="font-medium uppercase tracking-wide text-neutral-500">
 					Elevation
 				</span>
-				<span class="text-[11px] text-neutral-400">
+				<span class="text-right text-[11px] text-neutral-400 pointer-coarse:hidden">
 					click the chart or map to set markers · drag chips to adjust
+				</span>
+				<span class="hidden text-right text-[11px] text-neutral-400 pointer-coarse:inline">
+					tap to set markers · pinch to zoom
 				</span>
 			</div>
 			<ElevationChart
@@ -449,7 +472,7 @@
 						Selection
 					{/if}
 				</h3>
-				<dl class="grid grid-cols-1 gap-x-4 gap-y-4 text-sm sm:grid-cols-3">
+				<dl class="grid grid-cols-2 gap-x-4 gap-y-4 text-sm sm:grid-cols-3">
 					<div>
 						<dt class="flex items-center gap-1.5 text-xs uppercase tracking-wide text-neutral-500">
 							{@render iconRoute()}
@@ -499,8 +522,8 @@
 							{cropStats.maxGrade.toFixed(1)}%
 						</dd>
 					</div>
-					<div class="flex items-end justify-end gap-2">
-						{#if adjusting}
+					<div class="col-span-2 flex flex-wrap items-end justify-end gap-2 sm:col-span-1">
+					{#if adjusting}
 							<button
 								type="button"
 								onclick={cancelAdjust}
@@ -583,8 +606,9 @@
 						}}
 						class="mt-4 border-t border-neutral-200 pt-4"
 					>
-						<div class="flex items-center gap-2">
+						<div class="flex flex-wrap items-center gap-2">
 							<!-- svelte-ignore a11y_autofocus -->
+							<!-- text-base on a phone: iOS zooms the page into any input under 16px -->
 							<input
 								name="name"
 								type="text"
@@ -593,8 +617,9 @@
 								autocomplete="off"
 								bind:value={saveName}
 								placeholder="Segment name (e.g. Alpe d'Huez climb)"
-								class="flex-1 rounded-md border border-neutral-300 px-3 py-1.5 text-sm focus:border-neutral-900 focus:outline-none"
+								class="min-w-0 basis-full rounded-md border border-neutral-300 px-3 py-1.5 text-base focus:border-neutral-900 focus:outline-none sm:flex-1 sm:basis-auto sm:text-sm"
 							/>
+							<span class="flex-1 sm:hidden"></span>
 							<input type="hidden" name="startDistM" value={crop?.startM ?? ''} />
 							<input type="hidden" name="endDistM" value={crop?.endM ?? ''} />
 							<input type="hidden" name="binSizeM" value="500" />
@@ -628,7 +653,7 @@
 				{:else if markerB != null}
 					<span class="font-medium">B</span> at {fmtKm(markerB)}.
 				{/if}
-				Click to place the other.
+				<span class="pointer-coarse:hidden">Click</span><span class="hidden pointer-coarse:inline">Tap</span> to place the other.
 				<button
 					type="button"
 					onclick={resetMarkers}
@@ -654,12 +679,12 @@
 					</button>
 				</h3>
 				<div class="flex items-center gap-2">
-					<div class="flex overflow-hidden rounded-md border border-neutral-300">
-						{#each SENSITIVITIES as preset (preset)}
-							<button
-								type="button"
-								onclick={() => setSensitivity(preset)}
-								class="px-2 py-1 text-[11px] font-medium capitalize {sensitivity === preset
+				<div class="flex overflow-hidden rounded-md border border-neutral-300">
+					{#each SENSITIVITIES as preset (preset)}
+						<button
+							type="button"
+							onclick={() => setSensitivity(preset)}
+							class="px-2 py-1 text-[11px] font-medium capitalize pointer-coarse:py-1.5 {sensitivity === preset
 									? 'bg-neutral-900 text-white'
 									: 'text-neutral-600 hover:bg-neutral-100'}"
 							>
@@ -725,7 +750,7 @@
 				<ul class="divide-y divide-neutral-200">
 					{#each segmentsWithStats as seg (seg.id)}
 						<li
-							class="relative flex items-center gap-3 px-4 py-3 transition-colors {hoveredSegmentId ===
+						class="relative flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 transition-colors sm:flex-nowrap {hoveredSegmentId ===
 							seg.id
 								? 'bg-neutral-50'
 								: ''} {adjusting?.segId === seg.id ? 'bg-amber-50' : ''}"
@@ -755,10 +780,10 @@
 											}
 										};
 									}}
-									class="flex flex-1 items-center gap-3"
+									class="flex min-w-0 flex-1 flex-wrap items-center gap-3 sm:flex-nowrap"
 								>
 									<input type="hidden" name="segId" value={seg.id} />
-									<div class="flex-1">
+									<div class="min-w-0 basis-full sm:flex-1 sm:basis-auto">
 										<!-- svelte-ignore a11y_autofocus -->
 										<input
 											name="name"
@@ -767,7 +792,7 @@
 											bind:value={editingSegName}
 											autofocus
 											required
-											class="block w-full rounded-md border border-neutral-300 px-2 py-1 text-sm font-medium focus:border-neutral-900 focus:outline-none"
+											class="block w-full rounded-md border border-neutral-300 px-2 py-1 text-base font-medium focus:border-neutral-900 focus:outline-none sm:text-sm"
 										/>
 										<div class="mt-1 text-xs text-neutral-500">
 											<code>{seg.id}</code> · {fmtKm(seg.startDistM)} → {fmtKm(seg.endDistM)}
@@ -786,19 +811,21 @@
 									</div>
 								</form>
 							{:else}
-								<a href="/routes/{route.id}/segments/{seg.id}" class="flex-1 text-left">
+								<a href="/routes/{route.id}/segments/{seg.id}" class="min-w-0 flex-1 text-left">
 									<span class="absolute inset-0" aria-hidden="true"></span>
-									<div class="flex items-center gap-2 text-sm font-medium">
+									<div class="flex flex-wrap items-center gap-2 text-sm font-medium">
 										{seg.name}
 										{#if adjusting?.segId === seg.id}
 											<span class="rounded bg-amber-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900">adjusting</span>
 										{/if}
 									</div>
-									<div class="text-xs text-neutral-500">
-										<code>{seg.id}</code> · {fmtKm(seg.startDistM)} → {fmtKm(seg.endDistM)}
+									<div class="break-words text-xs text-neutral-500">
+										<code class="break-all">{seg.id}</code> · {fmtKm(seg.startDistM)} → {fmtKm(seg.endDistM)}
 									</div>
 								</a>
-								<div class="flex items-center gap-5 text-sm tabular-nums">
+								<div
+									class="order-last flex basis-full items-center justify-between gap-5 text-sm whitespace-nowrap tabular-nums sm:order-none sm:basis-auto sm:justify-start"
+								>
 									<div class="text-right">
 										<div class="text-[10px] uppercase tracking-wide text-neutral-500">Length</div>
 										<div class="font-medium">{fmtKm(seg.stats.lengthM)}</div>
@@ -973,9 +1000,9 @@
 	{@const isPart = partIdx != null}
 	{@const key = isPart ? `${kind}${i}:${partIdx}` : `${kind}${i}`}
 	<li
-		class="relative flex items-center gap-3 transition-colors {isPart
-			? 'py-2.5 pr-4 pl-12'
-			: 'px-4 py-3'} {hoveredClimbKey === key ? 'bg-neutral-50' : isPart ? 'bg-neutral-50/40' : ''}"
+	class="relative flex flex-wrap items-center gap-x-3 gap-y-2 transition-colors sm:flex-nowrap {isPart
+		? 'py-2.5 pr-4 pl-8 sm:pl-12'
+		: 'px-4 py-3'} {hoveredClimbKey === key ? 'bg-neutral-50' : isPart ? 'bg-neutral-50/40' : ''}"
 		onpointerenter={(e) => {
 			if (e.pointerType === 'mouse' && !adjusting) hoveredClimbKey = key;
 		}}
@@ -996,8 +1023,8 @@
 		>
 			{c.category ?? '·'}
 		</span>
-		<div class="flex-1">
-			<div class="flex items-center gap-2 text-sm font-medium">
+		<div class="min-w-0 flex-1">
+			<div class="flex items-center gap-2 text-sm font-medium whitespace-nowrap">
 				<a href={exploreUrl(c, itemName(kind, c, i, partIdx ?? undefined))} class="hover:underline">
 					<span class="absolute inset-0" aria-hidden="true"></span>
 					{kind === 'd' ? 'Descent' : 'Climb'}
@@ -1031,16 +1058,21 @@
 			type="button"
 			title="Load into the A/B markers to trim or extend"
 			onclick={() => selectClimb(c)}
-			class="relative z-10 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900"
+			aria-label="Adjust: load into the A/B markers"
+			class="relative z-10 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900 pointer-coarse:py-2"
 		>
 			{@render iconPencil()}
-			Adjust
+			<span class="hidden sm:inline">Adjust</span>
 		</button>
 	</li>
 {/snippet}
 
 {#snippet climbStats(c: DetectedClimb, kind: DetectionKind)}
-	<div class="flex items-center gap-5 text-sm tabular-nums">
+	<!-- On a phone the stats drop to their own row under the name (order-last
+	     + full basis), spread across it; from sm they sit inline. -->
+	<div
+		class="order-last flex basis-full items-center justify-between gap-5 text-sm whitespace-nowrap tabular-nums sm:order-none sm:basis-auto sm:justify-start"
+	>
 		<div class="text-right">
 			<div class="text-[10px] uppercase tracking-wide text-neutral-500">Length</div>
 			<div class="font-medium">{fmtKm(c.lengthM)}</div>
@@ -1082,7 +1114,7 @@
 			? `Hide ${what} bands on the elevation chart`
 			: `Shade ${what} bands on the elevation chart`}
 		onclick={toggle}
-		class="flex h-[26px] w-7 items-center justify-center rounded-md border {on
+		class="flex h-[26px] w-7 items-center justify-center rounded-md border pointer-coarse:h-[30px] pointer-coarse:w-9 {on
 			? 'border-neutral-900 bg-neutral-900 text-white'
 			: 'border-neutral-300 text-neutral-500 hover:bg-neutral-100'}"
 	>
