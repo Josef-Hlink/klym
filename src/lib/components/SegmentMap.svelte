@@ -27,6 +27,7 @@
 	import { computeVisibility, visibleAtDist } from '$lib/topo/visibility.js';
 	import {
 		classifyTwoFinger,
+		regradeTwoFinger,
 		pairFrame,
 		pinchViewport,
 		twistYaw,
@@ -969,6 +970,7 @@
 		frame: ReturnType<typeof pairFrame>;
 		rel0: Pt;
 		vp0: Viewport;
+		yaw0: number;
 		pitch0: number;
 		mode: TwoFingerMode;
 		twist: { yaw: number; angle: number } | null;
@@ -1000,6 +1002,7 @@
 				frame,
 				rel0: { x: (frame.cx - rect.left) / rect.width, y: (frame.cy - rect.top) / rect.height },
 				vp0: { ...viewport },
+				yaw0: yaw,
 				pitch0: pitch,
 				mode: 'undecided',
 				twist: null
@@ -1026,6 +1029,16 @@
 			g.mode = classifyTwoFinger(g.pts, [a, b], is3D);
 			if (g.mode === 'undecided') return;
 			usedTwoFingers = true;
+		} else if (g.mode === 'transform') {
+			// Grace window: a slide that started out looking like a pan (or,
+			// with a lagging finger, a twist) can still become a tilt; put back
+			// the pan, zoom and rotation it already applied.
+			g.mode = regradeTwoFinger(g.pts, [a, b], is3D, g.mode);
+			if (g.mode === 'tilt') {
+				viewport = { ...g.vp0 };
+				yaw = g.yaw0;
+				g.twist = null;
+			}
 		}
 		const f = pairFrame(a, b);
 		if (g.mode === 'tilt') {

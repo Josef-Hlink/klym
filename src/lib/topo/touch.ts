@@ -38,41 +38,77 @@ export function angleDelta(a: number, b: number): number {
 	return d;
 }
 
-// Movement (CSS px, the larger of the two fingers) before the gesture
-// commits to a mode.
-export const DECIDE_PX = 10;
-// A tilt is two fingers moving mostly vertically, the same way, without
-// pinching: each finger's |dy| at least this many times its |dx| …
-const TILT_VERTICALITY = 1.5;
-// … and the spread changing by less than this fraction.
-const TILT_MAX_PINCH = 0.15;
-// Twist dead zone: a pinch always twists a little; rotation only engages
-// past this angle (≈ 10°), then follows the fingers from there.
+// How far the fingers' midpoint travels (CSS px) before the gesture
+// commits to a mode. A clear pinch or twist commits sooner.
+export const DECIDE_PX = 12;
+// Grace window: a gesture that committed to 'transform' may still turn
+// into a tilt while its midpoint has travelled no further than this. Real
+// fingers rarely start together: the first one to move looks like a pan
+// (or a small twist) before the second catches up.
+export const TILT_GRACE_PX = 60;
+// A tilt moves the midpoint mostly vertically: |dy| at least this many
+// times |dx| …
+const TILT_VERTICALITY = 1.2;
+// … without the spread changing by more than this fraction (past it the
+// gesture is a pinch, and commits at once).
+const PINCH_COMMIT = 0.12;
+// Twist dead zone: a pinch always twists a little, and a lagging finger
+// looks like a twist; rotation only engages past this angle (≈ 10°), then
+// follows the fingers from there.
 export const TWIST_DEAD_ZONE = 0.17;
 
 export type TwoFingerMode = 'undecided' | 'transform' | 'tilt';
 
 /**
  * Decide what a two-finger gesture is from where each finger started and
- * where it is now. `allowTilt` is false in 2D, where a vertical two-finger
- * slide pans like any other.
+ * where it is now, judged on the pair (midpoint travel, spread, angle) rather
+ * than per finger, so a staggered start still reads as a slide. `allowTilt`
+ * is false in 2D, where a vertical two-finger slide pans like any other.
+ *
+ * Twist vs a lagging finger: both change the pair's angle, but a twist turns
+ * the fingers about a midpoint that stays put, while a slide with one finger
+ * behind carries the midpoint along. So a vertical slide counts as a tilt as
+ * long as the midpoint has travelled further than the arc the angle change
+ * sweeps at the fingertips.
  */
 export function classifyTwoFinger(
 	start: [Pt, Pt],
 	now: [Pt, Pt],
 	allowTilt: boolean
 ): TwoFingerMode {
-	const d0 = { x: now[0].x - start[0].x, y: now[0].y - start[0].y };
-	const d1 = { x: now[1].x - start[1].x, y: now[1].y - start[1].y };
-	const moved = Math.max(Math.hypot(d0.x, d0.y), Math.hypot(d1.x, d1.y));
-	if (moved < DECIDE_PX) return 'undecided';
-	if (!allowTilt) return 'transform';
 	const f0 = pairFrame(start[0], start[1]);
 	const f1 = pairFrame(now[0], now[1]);
+	const dx = f1.cx - f0.cx;
+	const dy = f1.cy - f0.cy;
 	const pinch = f0.dist > 0 ? Math.abs(f1.dist - f0.dist) / f0.dist : 0;
-	const vertical = (d: Pt) => Math.abs(d.y) >= TILT_VERTICALITY * Math.abs(d.x);
-	const sameWay = Math.sign(d0.y) === Math.sign(d1.y) && d0.y !== 0;
-	return vertical(d0) && vertical(d1) && sameWay && pinch < TILT_MAX_PINCH ? 'tilt' : 'transform';
+	const twist = Math.abs(angleDelta(f0.angle, f1.angle));
+	const travel = Math.hypot(dx, dy);
+	if (pinch > PINCH_COMMIT) return 'transform';
+	if (travel < DECIDE_PX) return twist > TWIST_DEAD_ZONE ? 'transform' : 'undecided';
+	if (!allowTilt) return 'transform';
+	const arc = (twist * f0.dist) / 2;
+	const vertical = Math.abs(dy) >= TILT_VERTICALITY * Math.abs(dx);
+	return vertical && arc < travel ? 'tilt' : 'transform';
+}
+
+/**
+ * The grace window: re-judge a gesture that went to 'transform' while its
+ * midpoint is still within TILT_GRACE_PX of where it started. Once it looks
+ * like a tilt — fingers level again, no pinch, moving vertically — it
+ * becomes one, and the caller undoes the pan, zoom and any rotation the
+ * staggered start already applied. Never leaves 'tilt'.
+ */
+export function regradeTwoFinger(
+	start: [Pt, Pt],
+	now: [Pt, Pt],
+	allowTilt: boolean,
+	mode: TwoFingerMode
+): TwoFingerMode {
+	if (mode !== 'transform' || !allowTilt) return mode;
+	const f0 = pairFrame(start[0], start[1]);
+	const f1 = pairFrame(now[0], now[1]);
+	if (Math.hypot(f1.cx - f0.cx, f1.cy - f0.cy) > TILT_GRACE_PX) return mode;
+	return classifyTwoFinger(start, now, true) === 'tilt' ? 'tilt' : mode;
 }
 
 /**
