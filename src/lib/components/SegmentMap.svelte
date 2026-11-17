@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { findPointAtDistance, gradeColor, type ColorTheme, type GradeBin } from '$lib/elevation.js';
 	import { fmtKm, fmtM } from '$lib/format.js';
 	import {
@@ -64,8 +64,10 @@
 		computeViewTransform,
 		defaultViewport,
 		isZoomedOrPanned,
+		refitViewport,
 		type Viewport
 	} from '$lib/topo/viewport.js';
+	import type { Dimensions } from '$lib/topo/projection.js';
 	import type { RoutePoint } from '$lib/types.js';
 
 	type Props = {
@@ -177,7 +179,63 @@
 			? Math.round(wrapperWidth / NARROW_ASPECT)
 			: null
 	);
-	const boxHeight = $derived(userHeight ?? autoHeight);
+	// Fullscreen: the browser's own (Android, desktop) where it exists, a
+	// fixed full-window overlay where it doesn't (iPhone has no element
+	// fullscreen). Either way the box takes the visible viewport's height,
+	// the page underneath can't scroll, and one finger pans the map — there
+	// is no page left for it to scroll.
+	let fullscreen = $state(false);
+	let fsHeight = $state(0);
+	// Out of the flow, the topo would leave the page shorter (the scroll
+	// position clamps): a placeholder holds its inline height meanwhile, and
+	// the scroll position is put back on the way out.
+	let placeholderH = $state<number | null>(null);
+	let fsScrollY = 0;
+	const boxHeight = $derived(fullscreen && fsHeight > 0 ? fsHeight : (userHeight ?? autoHeight));
+	function measureFs() {
+		fsHeight = Math.round(window.visualViewport?.height ?? window.innerHeight);
+	}
+	async function enterFullscreen() {
+		if (fullscreen) return;
+		placeholderH = wrapperEl?.getBoundingClientRect().height ?? null;
+		fsScrollY = window.scrollY;
+		fullscreen = true;
+		closeTouchPopovers();
+		measureFs();
+		document.documentElement.style.overflow = 'hidden';
+		try {
+			await wrapperEl?.requestFullscreen?.({ navigationUI: 'hide' });
+		} catch {
+			// no element fullscreen (iPhone) or refused: the overlay stands in
+		}
+		measureFs();
+	}
+	function leaveFullscreenState() {
+		fullscreen = false;
+		document.documentElement.style.overflow = '';
+		invalidateRects();
+		requestAnimationFrame(() => {
+			placeholderH = null;
+			window.scrollTo({ top: fsScrollY, behavior: 'instant' });
+		});
+	}
+	function exitFullscreen() {
+		leaveFullscreenState();
+		if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+	}
+	function onFullscreenChange() {
+		// Left the browser's fullscreen by its own means (Esc, back gesture).
+		if (!document.fullscreenElement && fullscreen) leaveFullscreenState();
+		else if (fullscreen) measureFs();
+	}
+	function onFsResize() {
+		if (fullscreen) measureFs();
+	}
+	function onFsKey(e: KeyboardEvent) {
+		// The browser usually consumes Esc to leave its own fullscreen (and
+		// fullscreenchange follows); where it doesn't, or in the overlay, do it.
+		if (e.key === 'Escape' && fullscreen) exitFullscreen();
+	}
 
 	// Cached on-screen rects for the canvas and the wrapper.
 	// getBoundingClientRect forces a synchronous style/layout flush; calling
@@ -606,6 +664,19 @@
 		}
 	});
 
+	// The canvas changing shape (fullscreen, resize handle, rotation) changes
+	// dimensions; keep what the user was looking at framed (refitViewport).
+	let prevDims: Dimensions | null = null;
+	$effect(() => {
+		const d = dimensions;
+		untrack(() => {
+			if (prevDims && viewport && (prevDims.H !== d.H || prevDims.scale !== d.scale)) {
+				viewport = refitViewport(viewport, prevDims, d);
+			}
+			prevDims = d;
+		});
+	});
+
 	const isZoomed = $derived(isZoomedOrPanned(viewport, dimensions));
 	const isRotated = $derived(yaw !== 0 || pitch !== 0);
 	const isViewModified = $derived(isZoomed || isRotated);
@@ -975,8 +1046,15 @@
 		mode: TwoFingerMode;
 		twist: { yaw: number; angle: number } | null;
 	};
-	let touchGesture: { kind: 'scrub' } | ({ kind: 'two' } & TwoStart) | { kind: 'done' } | null =
-		null;
+	type PanStart = { start: Pt; rel0: Pt; vp0: Viewport; moved: boolean };
+	let touchGesture:
+		| { kind: 'scrub' }
+		| ({ kind: 'pan' } & PanStart)
+		| ({ kind: 'two' } & TwoStart)
+		| { kind: 'done' }
+		| null = null;
+	// Finger travel before a fullscreen drag becomes a pan instead of a tap.
+	const PAN_SLOP_PX = 6;
 	let touchHeld = false;
 	let usedTwoFingers = $state(false);
 
@@ -985,7 +1063,19 @@
 		invalidateRects();
 		touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
 		if (touches.size === 1) {
-			touchGesture = { kind: 'scrub' };
+			const rect = surfaceRect();
+			if (fullscreen && viewport && rect && rect.width > 0) {
+				// No page to scroll: one finger moves the map, a tap still reads.
+				touchGesture = {
+					kind: 'pan',
+					start: { x: e.clientX, y: e.clientY },
+					rel0: { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height },
+					vp0: { ...viewport },
+					moved: false
+				};
+			} else {
+				touchGesture = { kind: 'scrub' };
+			}
 			touchHeld = true;
 			hoverAt(e.clientX, e.clientY, true);
 		} else if (touches.size === 2 && viewport) {
@@ -1019,6 +1109,25 @@
 		if (!g) return;
 		if (g.kind === 'scrub') {
 			hoverAt(e.clientX, e.clientY, true);
+			return;
+		}
+		if (g.kind === 'pan') {
+			if (!g.moved && Math.hypot(e.clientX - g.start.x, e.clientY - g.start.y) <= PAN_SLOP_PX) return;
+			if (!g.moved) {
+				g.moved = true;
+				hoverInfo = null;
+			}
+			const rect = surfaceRect();
+			if (!rect || rect.width <= 0) return;
+			// A pan is a pinch whose spread never changes.
+			viewport = pinchViewport(
+				g.vp0,
+				dimensions,
+				g.rel0,
+				{ x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height },
+				1,
+				1
+			);
 			return;
 		}
 		if (g.kind !== 'two') return;
@@ -1093,6 +1202,10 @@
 		wrapperEl?.addEventListener('wheel', onWheel, { passive: false });
 		wrapperEl?.addEventListener('touchmove', onTouchMoveNative, { passive: false });
 		document.addEventListener('pointerdown', onOutsidePointerDown, true);
+		document.addEventListener('fullscreenchange', onFullscreenChange);
+		document.addEventListener('keydown', onFsKey);
+		window.addEventListener('resize', onFsResize, { passive: true });
+		window.visualViewport?.addEventListener('resize', onFsResize);
 		// Any scroll (capture: also catches scrollable ancestors) or window
 		// resize moves the cached rect; drop it so the next read is fresh.
 		window.addEventListener('scroll', invalidateRects, { capture: true, passive: true });
@@ -1105,6 +1218,11 @@
 		wrapperEl?.removeEventListener('wheel', onWheel);
 		wrapperEl?.removeEventListener('touchmove', onTouchMoveNative);
 		document.removeEventListener('pointerdown', onOutsidePointerDown, true);
+		document.removeEventListener('fullscreenchange', onFullscreenChange);
+		document.removeEventListener('keydown', onFsKey);
+		window.removeEventListener('resize', onFsResize);
+		window.visualViewport?.removeEventListener('resize', onFsResize);
+		if (fullscreen) document.documentElement.style.overflow = '';
 		window.removeEventListener('scroll', invalidateRects, { capture: true });
 		window.removeEventListener('resize', invalidateRects);
 		document.removeEventListener('pointermove', onDocPointerMove);
@@ -1122,11 +1240,14 @@
 
 </script>
 
+<div style:height={placeholderH != null ? `${placeholderH}px` : undefined}>
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
 	bind:this={wrapperEl}
 	bind:clientWidth={wrapperWidth}
-	class="relative touch-pan-y select-none bg-neutral-100"
+	class="select-none bg-neutral-100 {fullscreen
+		? 'fixed inset-0 z-50 touch-none'
+		: 'relative touch-pan-y'}"
 	style:height={boxHeight ? `${boxHeight}px` : undefined}
 	oncontextmenu={(e) => e.preventDefault()}
 	onpointerdown={onPointerDown}
@@ -1150,7 +1271,7 @@
 		class="pointer-events-none absolute left-2 top-2 z-30 rounded-md bg-white/90 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-neutral-600 shadow-sm"
 	>
 		Topo
-		{#if !usedTwoFingers}
+		{#if !usedTwoFingers && !fullscreen}
 			<!-- one finger scrolls the page, so say how to move the map -->
 			<span class="hidden normal-case tracking-normal text-neutral-500 pointer-coarse:inline"
 				>· two fingers to move{is3D ? ' or tilt' : ''}</span
@@ -1158,17 +1279,52 @@
 		{/if}
 	</div>
 
-	{#if isViewModified}
+	<div
+		onpointerdown={(e) => e.stopPropagation()}
+		class="absolute top-2 right-2 z-30 flex items-center gap-1"
+	>
+		{#if isViewModified}
+			<button
+				type="button"
+				onclick={resetView}
+				class="rounded-md bg-white/90 px-2 py-1 text-[11px] font-medium text-neutral-600 shadow-sm hover:bg-white hover:text-neutral-900 pointer-coarse:py-2"
+				aria-label="Reset view"
+			>
+				Reset view
+			</button>
+		{/if}
 		<button
 			type="button"
-			onpointerdown={(e) => e.stopPropagation()}
-			onclick={resetView}
-			class="absolute right-2 top-2 z-30 rounded-md bg-white/90 px-2 py-1 text-[11px] font-medium text-neutral-600 shadow-sm hover:bg-white hover:text-neutral-900"
-			aria-label="Reset view"
+			onclick={() => (fullscreen ? exitFullscreen() : enterFullscreen())}
+			class="flex h-[26px] w-[26px] items-center justify-center rounded-md bg-white/90 text-neutral-600 shadow-sm hover:bg-white hover:text-neutral-900 pointer-coarse:h-9 pointer-coarse:w-9"
+			aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+			aria-pressed={fullscreen}
+			title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'}
 		>
-			Reset view
+			<svg
+				viewBox="0 0 24 24"
+				class="h-3.5 w-3.5 pointer-coarse:h-4 pointer-coarse:w-4"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="2"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+				aria-hidden="true"
+			>
+				{#if fullscreen}
+					<polyline points="4 14 10 14 10 20" />
+					<polyline points="20 10 14 10 14 4" />
+					<line x1="14" y1="10" x2="21" y2="3" />
+					<line x1="3" y1="21" x2="10" y2="14" />
+				{:else}
+					<polyline points="15 3 21 3 21 9" />
+					<polyline points="9 21 3 21 3 15" />
+					<line x1="21" y1="3" x2="14" y2="10" />
+					<line x1="3" y1="21" x2="10" y2="14" />
+				{/if}
+			</svg>
 		</button>
-	{/if}
+	</div>
 
 	{#snippet sourceIcon(source: MapSource)}
 		<svg
@@ -1499,6 +1655,7 @@
 
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
+		hidden={fullscreen}
 		role="separator"
 		aria-label="Resize map"
 		onpointerdown={onResizeDown}
@@ -1517,4 +1674,5 @@
 			<line x1="14" y1="11" x2="11" y2="14" />
 		</svg>
 	</div>
+</div>
 </div>

@@ -9,7 +9,8 @@ import {
 	MAX_VIEW_FRAC,
 	MIN_VIEW_FRAC,
 	PAN_MARGIN_FRAC,
-	ZOOM_FACTOR
+	ZOOM_FACTOR,
+	refitViewport
 } from './viewport.js';
 
 const dim: Dimensions = { W: 1600, H: 800, innerW: 1536, innerH: 736, scale: 1 };
@@ -195,5 +196,37 @@ describe('computeViewTransform', () => {
 		expect(computeViewTransform(defaultViewport(dim), dim, 800, 0, 1)).toBeNull();
 		expect(computeViewTransform({ x: 0, y: 0, w: 0, h: 400 }, dim, 800, 400, 1)).toBeNull();
 		expect(computeViewTransform(defaultViewport(dim), dim, 800, 400, 0)).toBeNull();
+	});
+});
+
+describe('refitViewport', () => {
+	const d0 = { W: 1600, H: 800, innerW: 1536, innerH: 736, scale: 2 };
+	const d1 = { W: 1600, H: 1400, innerW: 1536, innerH: 1336, scale: 2 };
+	const d2 = { W: 1600, H: 1400, innerW: 1536, innerH: 1336, scale: 3 };
+
+	it('keeps a view at rest at rest', () => {
+		expect(refitViewport({ x: 0, y: 0, w: 1600, h: 800 }, d0, d1)).toEqual({
+			x: 0,
+			y: 0,
+			w: 1600,
+			h: 1400
+		});
+	});
+	it('keeps the canvas aspect', () => {
+		const v = refitViewport({ x: 200, y: 100, w: 800, h: 400 }, d0, d1);
+		expect(v.w / v.h).toBeCloseTo(d1.W / d1.H);
+	});
+	it('keeps the same content centred when the fit scale is unchanged', () => {
+		// centre 200 units right of and 100 below the canvas centre
+		const v = refitViewport({ x: 600, y: 300, w: 800, h: 400 }, d0, d1);
+		expect(v.x + v.w / 2).toBeCloseTo(1000);
+		expect(v.y + v.h / 2).toBeCloseTo(700 + 100);
+		expect(v.w).toBeCloseTo(800);
+	});
+	it('follows a change of fit scale', () => {
+		const v = refitViewport({ x: 600, y: 300, w: 800, h: 400 }, d0, d2);
+		// offsets and width grow by 3/2 so the same world shows at the same zoom
+		expect(v.x + v.w / 2).toBeCloseTo(800 + 200 * 1.5);
+		expect(v.w).toBeCloseTo(1200);
 	});
 });
