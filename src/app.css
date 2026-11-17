@@ -4,4 +4,36 @@
    the page horizontally as the scrollbar comes and goes. */
 html {
 	scrollbar-gutter: stable;
+	/* Pans and pinch-zoom only: no double-tap zoom (a quick second tap on a
+	   chart zoomed the page) and no tap delay. Charts narrow this further. */
+	touch-action: manipulation;
+	-webkit-text-size-adjust: 100%;
+}
+
+/* klym is an app, not a document: labels, stats and chart text don't
+   select. A long press on a chart, a drag that strays off a chip or a
+   double tap on a stat used to paint selection across the page. Form
+   fields and ids (<code>, copied into URLs) stay selectable. */
+body {
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-tap-highlight-color: transparent;
+	/* Belt and braces: nothing may scroll the page sideways on a phone. clip
+	   (unlike hidden) makes no scroll container, so sticky still works. */
+	overflow-x: clip;
+}
+input,
+textarea,
+[contenteditable],
+code,
+.selectable {
+	-webkit-user-select: text;
+	user-select: text;
+}
+/* Chart text never selects and a long press on a chart raises no callout. */
+svg text,
+canvas {
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-touch-callout: none;
 }
