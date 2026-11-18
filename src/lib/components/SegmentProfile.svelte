@@ -8,6 +8,7 @@
 	} from '$lib/elevation.js';
 	import KlymWordmarkGlyphs from './KlymWordmarkGlyphs.svelte';
 	import { fmtDist } from '$lib/format.js';
+	import { scrub } from '$lib/scrub.js';
 	import type { RoutePoint } from '$lib/types.js';
 
 	export type GradeLabelMode = 'percent' | 'number' | 'off';
@@ -32,6 +33,15 @@
 		externalHoverDistM?: number | null;
 		hoverDistM?: number | null;
 		svgEl?: SVGSVGElement | null;
+		/**
+		 * 'full' is the 1600×800 export image. 'auto' (on screen) swaps in a
+		 * compact 800×640 layout with larger type once the card is narrower
+		 * than COMPACT_BELOW_PX, so a phone shows legible labels instead of the
+		 * export shrunk to a fifth. Exports always render 'full'.
+		 */
+		layout?: 'auto' | 'full';
+		/** No hover/scrub handling (the offscreen export copy). */
+		static?: boolean;
 	};
 	let {
 		points,
@@ -46,7 +56,9 @@
 		theme = 'klym',
 		externalHoverDistM = null,
 		hoverDistM = $bindable(null),
-		svgEl = $bindable(null)
+		svgEl = $bindable(null),
+		layout = 'auto',
+		static: isStatic = false
 	}: Props = $props();
 
 	function fmtGrade(grade: number): string {
@@ -54,25 +66,61 @@
 		return labelMode === 'percent' ? `${n}%` : n;
 	}
 
-	const W = 1600;
-	const H = 800;
-	const M = { top: 142, right: 90, bottom: 70, left: 60 };
-	const plotW = W - M.left - M.right;
-	const plotH = H - M.top - M.bottom;
-	const yBot = M.top + plotH;
+	// Two layouts in viewBox units. 'full' is the export image (keep it
+	// byte-stable). 'compact' is the phone screen: a narrower, taller box so
+	// one unit is ~2× more pixels, with type scaled up again on top.
+	const LAYOUTS = {
+		full: {
+			W: 1600,
+			H: 800,
+			M: { top: 142, right: 90, bottom: 70, left: 60 },
+			brandW: 60,
+			markTop: 34,
+			font: { grade: 18, gradeAbove: 14, km: 13, tick: 14, endEle: 14, section: 36, route: 18 },
+			gradeInsideMinW: 22,
+			gradeAboveMinW: 18,
+			kmLabelMinGap: 0,
+			profileStroke: 3,
+			endStroke: 2
+		},
+		compact: {
+			W: 800,
+			H: 640,
+			M: { top: 112, right: 70, bottom: 66, left: 66 },
+			brandW: 48,
+			markTop: 22,
+			font: { grade: 24, gradeAbove: 20, km: 19, tick: 19, endEle: 20, section: 34, route: 20 },
+			gradeInsideMinW: 38,
+			gradeAboveMinW: 32,
+			kmLabelMinGap: 46,
+			profileStroke: 3.5,
+			endStroke: 2.5
+		}
+	} as const;
+	const COMPACT_BELOW_PX = 640;
+
+	let wrapperW = $state(0);
+	const L = $derived(
+		layout === 'auto' && wrapperW > 0 && wrapperW < COMPACT_BELOW_PX ? LAYOUTS.compact : LAYOUTS.full
+	);
+	const W = $derived(L.W);
+	const H = $derived(L.H);
+	const M = $derived(L.M);
+	const plotW = $derived(W - M.left - M.right);
+	const plotH = $derived(H - M.top - M.bottom);
+	const yBot = $derived(M.top + plotH);
 
 	// Branding block: the mark with the coloured wordmark under it, sharing one
 	// left edge and width; route/section names sit to their right on a common
 	// left edge. The mark's content spans x 4→59, y 4→58 in its 64-unit viewBox;
 	// the wordmark glyphs span x 3.84→185.66 with the baseline at y=0 and a
 	// 46.47-unit ascender (see KlymWordmarkGlyphs.svelte).
-	const BRAND_W = 60;
-	const markScale = BRAND_W / 55;
-	const markTop = 34;
-	const markBottom = markTop + 54 * markScale;
-	const wordScale = BRAND_W / 181.83;
-	const wordBaseline = markBottom + 6 + 46.47 * wordScale;
-	const labelX = M.left + BRAND_W + 14;
+	const markScale = $derived(L.brandW / 55);
+	const markTop = $derived(L.markTop);
+	const markBottom = $derived(markTop + 54 * markScale);
+	const wordScale = $derived(L.brandW / 181.83);
+	const wordBaseline = $derived(markBottom + 6 + 46.47 * wordScale);
+	const labelX = $derived(M.left + L.brandW + 14);
 
 	const slicedPoints = $derived.by(() => {
 		if (points.length === 0) return [];
@@ -347,14 +395,38 @@
 		return parts.join(' ');
 	});
 
+	// Which bin ends get a distance label. The export labels every one; the
+	// compact layout skips ends closer than kmLabelMinGap units to the last
+	// labelled one (always keeping the final end), so rotated labels don't pile
+	// into each other at 25 sections across a phone.
+	const kmLabelled = $derived.by(() => {
+		const gap = L.kmLabelMinGap;
+		const out = binAreas.map(() => gap <= 0);
+		if (gap <= 0) return out;
+		let last = xScale(startDistM);
+		for (let i = 0; i < binAreas.length; i++) {
+			const x = xScale(binAreas[i].endM);
+			const isLast = i === binAreas.length - 1;
+			if (x - last >= gap || isLast) {
+				// Make room for the final label by dropping the one before it.
+				if (isLast && x - last < gap && i > 0) {
+					const prev = out.lastIndexOf(true);
+					if (prev >= 0) out[prev] = false;
+				}
+				out[i] = true;
+				last = x;
+			}
+		}
+		return out;
+	});
+
 	const endEle = $derived(slicedPoints[slicedPoints.length - 1]?.ele ?? 0);
 	const startEle = $derived(slicedPoints[0]?.ele ?? 0);
 
 	let wrapperEl: HTMLDivElement | null = $state(null);
-	let wrapperW = $state(0);
 	let tooltipW = $state(0);
 	let tooltipH = $state(0);
-	let hover = $state<{ idx: number; x: number; y: number } | null>(null);
+	let hover = $state<{ idx: number; x: number; y: number; touch: boolean } | null>(null);
 	$effect(() => {
 		// Drop stale hover when bins regenerate (e.g. dragging the ε slider).
 		bins;
@@ -369,22 +441,34 @@
 		}
 	});
 
-	function updateHover(e: PointerEvent, idx: number) {
-		if (!wrapperEl) return;
-		const r = wrapperEl.getBoundingClientRect();
-		hover = { idx, x: e.clientX - r.left, y: e.clientY - r.top };
+	// One hit-test for the whole plot (not a rect per bin): a finger's drag
+	// stays captured by whatever it landed on, so per-bin enter events never
+	// fire under a touch. The bin comes from the pointer's x alone.
+	function onScrubMove(e: PointerEvent) {
+		if (!wrapperEl || !svgEl) return;
+		const sr = svgEl.getBoundingClientRect();
+		if (sr.width <= 0) return;
+		const k = W / sr.width;
+		const sx = (e.clientX - sr.left) * k;
+		const sy = (e.clientY - sr.top) * k;
+		const touch = e.pointerType === 'touch';
+		// A mouse reads only over the plot; a finger anywhere in its column.
+		if (sx < M.left || sx > W - M.right || (!touch && (sy < M.top || sy > yBot))) {
+			hover = null;
+			return;
+		}
+		const d = startDistM + ((sx - M.left) / plotW) * (endDistM - startDistM);
+		let idx = bins.findIndex((b) => d >= b.startM && d <= b.endM);
+		if (idx < 0) idx = d < (bins[0]?.startM ?? 0) ? 0 : bins.length - 1;
+		if (idx < 0) return;
+		const wr = wrapperEl.getBoundingClientRect();
+		hover = { idx, x: e.clientX - wr.left, y: e.clientY - wr.top, touch };
 	}
 </script>
 
 <div bind:this={wrapperEl} bind:clientWidth={wrapperW} class="relative">
 
-<svg
-	bind:this={svgEl}
-	xmlns="http://www.w3.org/2000/svg"
-	viewBox="0 0 {W} {H}"
-	class="block h-auto w-full"
-	font-family="system-ui, -apple-system, 'Segoe UI', sans-serif"
->
+{#snippet svgBody()}
 	<rect width={W} height={H} fill="#f4f4f5" />
 
 	<!-- Branding block: inline copy of static/logo.svg (CSS classes don't
@@ -401,12 +485,12 @@
 		<KlymWordmarkGlyphs fill="#111" />
 	</g>
 	{#if sectionName}
-		<text x={labelX} y={markBottom - 2} font-size="36" font-weight="800" fill="#111"
+		<text x={labelX} y={markBottom - 2} font-size={L.font.section} font-weight="800" fill="#111"
 			>{sectionName}</text
 		>
 	{/if}
 	{#if routeName}
-		<text x={labelX} y={wordBaseline} font-size="18" font-weight="600" fill="#a1a1aa"
+		<text x={labelX} y={wordBaseline} font-size={L.font.route} font-weight="600" fill="#a1a1aa"
 			>{routeName}</text
 		>
 	{/if}
@@ -417,7 +501,7 @@
 		<text
 			x={W - M.right + 6}
 			y={y}
-			font-size="14"
+			font-size={L.font.tick}
 			fill="#71717a"
 			dominant-baseline="middle">{tick}m</text
 		>
@@ -437,26 +521,26 @@
 		stroke-width="1"
 	/>
 
-	{#each binAreas as area (area.startM)}
+	{#each binAreas as area, i (area.startM)}
 		{@const visibleHeight = yBot - area.yCenterCurve}
 
 
 		{#if labelMode !== 'off'}
-			{#if visibleHeight >= 48 && area.width >= 22}
+			{#if visibleHeight >= L.font.grade * (48 / 18) && area.width >= L.gradeInsideMinW}
 				<text
 					x={area.xCenter}
-					y={area.yCenterCurve + Math.min(34, visibleHeight - 14)}
-					font-size="18"
+					y={area.yCenterCurve + Math.min(L.font.grade * (34 / 18), visibleHeight - L.font.grade * (14 / 18))}
+					font-size={L.font.grade}
 					font-weight="700"
 					fill="#ffffff"
 					text-anchor="middle"
 					dominant-baseline="middle">{fmtGrade(area.grade)}</text
 				>
-			{:else if area.width >= 18}
+			{:else if area.width >= L.gradeAboveMinW}
 				<text
 					x={area.xCenter}
 					y={area.yCenterCurve - 8}
-					font-size="14"
+					font-size={L.font.gradeAbove}
 					font-weight="700"
 					fill="#52525b"
 					text-anchor="middle">{fmtGrade(area.grade)}</text
@@ -472,23 +556,25 @@
 			stroke="#52525b"
 			stroke-width="1"
 		/>
-		{@const labelX = xScale(area.endM)}
-		{@const labelY = yBot + 24}
-		<text
-			x={labelX}
-			y={labelY}
-			font-size="13"
-			fill="#52525b"
-			text-anchor="end"
-			transform="rotate(-30, {labelX.toFixed(1)}, {labelY.toFixed(1)})"
-			>{fmtDist(area.endM - startDistM)}</text
-		>
+		{#if kmLabelled[i]}
+			{@const kmX = xScale(area.endM)}
+			{@const kmY = yBot + (L.font.km * 24) / 13}
+			<text
+				x={kmX}
+				y={kmY}
+				font-size={L.font.km}
+				fill="#52525b"
+				text-anchor="end"
+				transform="rotate(-30, {kmX.toFixed(1)}, {kmY.toFixed(1)})"
+				>{fmtDist(area.endM - startDistM)}</text
+			>
+		{/if}
 	{/each}
 
 	<path
 		d={elevPath}
 		stroke="#111"
-		stroke-width="3"
+		stroke-width={L.profileStroke}
 		fill="none"
 		stroke-linejoin="round"
 		stroke-linecap="round"
@@ -502,12 +588,12 @@
 			y1={yScale(startEle)}
 			y2={M.top + plotH}
 			stroke="#111"
-			stroke-width="2"
+			stroke-width={L.endStroke}
 		/>
 		<text
 			x={xL - 4}
 			y={yScale(startEle) - 6}
-			font-size="14"
+			font-size={L.font.endEle}
 			font-weight="700"
 			fill="#111"
 			text-anchor="end">{Math.round(startEle)}m</text
@@ -520,12 +606,12 @@
 			y1={yScale(endEle)}
 			y2={M.top + plotH}
 			stroke="#111"
-			stroke-width="2"
+			stroke-width={L.endStroke}
 		/>
 		<text
 			x={xR + 4}
 			y={yScale(endEle) - 6}
-			font-size="14"
+			font-size={L.font.endEle}
 			font-weight="700"
 			fill="#111"
 			text-anchor="start">{Math.round(endEle)}m</text
@@ -560,25 +646,30 @@
 		/>
 	{/if}
 
-	{#each bins as bin, i (bin.startM)}
-		{@const hx = xScale(bin.startM)}
-		{@const hw = Math.max(0.5, xScale(bin.endM) - hx)}
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<rect
-			x={hx}
-			y={M.top}
-			width={hw}
-			height={plotH}
-			fill="transparent"
-			pointer-events="all"
-			onpointerenter={(e) => updateHover(e, i)}
-			onpointermove={(e) => updateHover(e, i)}
-			onpointerleave={() => {
-				if (hover?.idx === i) hover = null;
-			}}
-		/>
-	{/each}
-</svg>
+{/snippet}
+
+{#if isStatic}
+	<svg
+		bind:this={svgEl}
+		xmlns="http://www.w3.org/2000/svg"
+		viewBox="0 0 {W} {H}"
+		class="block h-auto w-full"
+		font-family="system-ui, -apple-system, 'Segoe UI', sans-serif"
+	>
+		{@render svgBody()}
+	</svg>
+{:else}
+	<svg
+		bind:this={svgEl}
+		xmlns="http://www.w3.org/2000/svg"
+		viewBox="0 0 {W} {H}"
+		class="block h-auto w-full"
+		font-family="system-ui, -apple-system, 'Segoe UI', sans-serif"
+		use:scrub={{ move: onScrubMove, leave: () => (hover = null) }}
+	>
+		{@render svgBody()}
+	</svg>
+{/if}
 
 {#if hover && bins[hover.idx]}
 	{@const bin = bins[hover.idx]}
@@ -592,11 +683,13 @@
 		wrapperW > 0 && tooltipW > 0
 			? Math.max(half + 4, Math.min(wrapperW - half - 4, hover.x))
 			: hover.x}
+	{@const lift = hover.touch ? 44 : 12}
 	<div
 		bind:clientWidth={tooltipW}
+		bind:clientHeight={tooltipH}
 		class="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-neutral-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-lg"
 		style:left="{xClamped}px"
-		style:top="{hover.y - 12}px"
+		style:top="{Math.max(tooltipH + 4, hover.y - lift)}px"
 	>
 		<div class="tabular-nums">
 			{lenM} m <span class="text-neutral-400">({aKm.toFixed(1)} → {bKm.toFixed(1)} km)</span>

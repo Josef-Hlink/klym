@@ -33,6 +33,13 @@ Package manager is **pnpm**. Use `pnpm <script>`, not `pnpm exec <tool>`.
 - `pnpm dev` — dev server (user keeps one running in a separate tmux
   window during sessions; don't start another). Pinned to **port 1047**
   with `strictPort` (1047m = Strava-verified Alpe d'Huez elevation gain).
+  On maria klym lives in **zones** (served at
+  `https://klym.<zone>.dev.hlink.dev`): `zone env <zone> klym` writes
+  `DATABASE_URL` (TCP, `postgresql://jdham@localhost:5432/klym`) plus
+  `KLYM_WEB_HOST` / `KLYM_WEB_ALLOWED_HOSTS` / `KLYM_HMR_CLIENT_PORT` into
+  `.env`, which `vite.config.ts` reads via `loadEnv`; unset, the dev server
+  stays on 127.0.0.1. The devShell (`.envrc`: `use flake`) supplies node
+  24 + pnpm.
 - `pnpm check` — `svelte-kit sync && svelte-check`. Run this after every
   change; user has allowlisted it.
 - `pnpm test` / `pnpm test:watch` — vitest. Run after changes to anything
@@ -304,8 +311,16 @@ as `undefined` so the user's own markers stay put.
 `svgToPngBlob` in the segment page serializes the SVG to a base64 data
 URL, loads it into an `<img>`, draws to a 2× canvas with a white
 background, then `canvas.toBlob`. Copy-to-clipboard uses the same blob
-via `navigator.clipboard.write([new ClipboardItem(...)])`. SVG download
-is just `Blob([xml])` with `image/svg+xml`.
+via `navigator.clipboard.write([new ClipboardItem(...)])`, and "Share
+image…" (only where `navigator.canShare({ files })`) hands it to the
+share sheet. SVG download is just `Blob([xml])` with `image/svg+xml`.
+
+The PNG starts rendering when the Export menu **opens**, and Copy passes
+the blob to `ClipboardItem` as a promise: iOS rejects clipboard writes and
+`navigator.share` that come after an `await` in the tap. Exports are
+always the full 1600×800 layout — when the on-screen profile is the
+compact phone layout, `SegmentView` mounts an offscreen `layout="full"
+static` copy just for the export (`exportSvg`).
 
 The chart's branding block is **inlined as polygons/paths** in
 `SegmentProfile.svelte` (the mark from `static/logo.svg`, the wordmark
@@ -440,6 +455,15 @@ The non-obvious bits worth knowing at the app level:
   userHeight` so the projection refits without letterboxing.
 - **Reset view** appears top-right when zoom/pan/rotation differ from
   defaults. Doesn't touch `zExaggeration` or saved 3D pose.
+- **Fullscreen** (top-right, beside Reset view): the browser's element
+  fullscreen where it exists, a `fixed inset-0` overlay where it doesn't
+  (iPhone). The box takes the visual viewport's height, the page can't
+  scroll underneath, a placeholder keeps the page's height and the scroll
+  position is restored on exit; Esc or the button leaves. In fullscreen one
+  finger pans (there's no page to scroll), a tap still reads.
+- **Shape changes keep the framing**: when `dimensions` change (fullscreen,
+  resize handle, rotation) `refitViewport` (viewport.ts) re-defaults a view
+  at rest and keeps a zoomed/panned one on the same content.
 
 ### Cross-component hover
 
@@ -497,6 +521,50 @@ travel in a hidden `climbs` form field (WYSIWYG with the preset picker)
 through `sanitizeGarminClimbs`. Slot empties on every restart/deploy —
 re-send before riding. `garmin/source/Palette.mc` mirrors the klym
 THEME_BANDS + categoryColor values; keep them in sync by hand.
+
+### Phones and touch
+
+Every view works under a finger at 390px (verified with emulated touch:
+taps, scrubs, pinches, twists, chip drags). The rules:
+
+- **No text selection** (`app.css`): `body` is `user-select: none`; inputs,
+  `<code>` ids and `.selectable` opt back in. `html` is `touch-action:
+  manipulation` (no double-tap zoom). Inputs are `text-base sm:text-sm` —
+  iOS zooms the page into any input under 16px.
+- **Charts scrub, pages scroll.** A chart's hover goes through
+  `use:scrub` (`src/lib/scrub.ts`, the same action as forj): touch-action
+  `pan-y`, a tap reads, a sideways drag scrubs, the reading holds after
+  lift until a touch lands elsewhere, a vertical swipe scrolls the page
+  (pointercancel clears). Hit-testing is by position over the whole plot
+  — a touch is implicitly captured by what it lands on, so per-element
+  enter events never fire under a finger. Tooltips lift ~44px above a
+  finger.
+- **Route chart** (`ElevationChart`): uPlot's cursor only follows a mouse,
+  so touch drives it via `u.setCursor`. Tap = place marker (as a click
+  does), sideways drag = scrub without placing, two fingers = pinch-zoom /
+  pan the x range. Chips are `touch-none` with an enlarged `before:` hit
+  area; while dragged the readout follows the chip; `pointercancel` ends
+  a drag without deleting the marker. Not sticky below `sm` (it would
+  eat half the screen) — Adjust scrolls it back into view instead.
+- **Route map**: `cooperativeGestures` on coarse pointers (one finger
+  scrolls the page, two move the map); snap radius 44px.
+- **CF profile**: below 640px the on-screen SVG switches to a compact
+  800×640 layout with larger type and thinned km labels (`LAYOUTS` in
+  `SegmentProfile`); the export layout is untouched.
+- **Topo**: one finger = page scroll / route readout; two fingers =
+  camera via the pure `src/lib/topo/touch.ts` (pinch zoom around the
+  midpoint + midpoint pan, twist past a ~10° dead zone = yaw, and in 3D a
+  vertical slide = tilt, Google-Maps style). The mode is judged on the
+  pair's midpoint, spread and angle, not per finger (fingers start
+  staggered), and a gesture that committed to pan/zoom can still become a
+  tilt within its first 60px of travel (`regradeTwoFinger`; the pan, zoom
+  and any rotation a lagging finger caused are undone). A non-passive `touchmove` listener
+  claims multi-touch moves, or `pan-y` would let the browser scroll under
+  the tilt. In fullscreen one finger pans instead (`touch-none`). Popovers open on tap (`controlPointer` remembers what pressed
+  a control) and hang off the toolbar; controls grow to 36px on
+  `pointer-coarse:`. Default height is near-square below 640px.
+- Phone-only copy/sizing uses Tailwind's `pointer-coarse:` variant, not
+  breakpoints, when it's about the finger rather than the width.
 
 ## UI conventions
 

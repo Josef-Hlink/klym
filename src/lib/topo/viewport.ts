@@ -132,3 +132,20 @@ export function computeViewTransform(
 	const ty = (devH - v.h * k) / 2 - v.y * k;
 	return { k, tx, ty };
 }
+
+// Keep the framing when the canvas changes shape (fullscreen in/out, the
+// resize handle, a phone rotating). VB_W is fixed, so a new aspect means a
+// new dimensions.H — and possibly a new dimensions.scale, since the route
+// is fitted to whichever axis is tighter. A view at rest stays at rest (the
+// new default); a zoomed/panned view keeps the same world content centred at
+// the same apparent zoom: viewBox distances from the canvas centre scale by
+// the ratio of the two fit scales.
+export function refitViewport(viewport: Viewport, from: Dimensions, to: Dimensions): Viewport {
+	if (!isZoomedOrPanned(viewport, from)) return defaultViewport(to);
+	const s = from.scale > 0 && to.scale > 0 ? to.scale / from.scale : 1;
+	const cx = to.W / 2 + (viewport.x + viewport.w / 2 - from.W / 2) * s;
+	const cy = to.H / 2 + (viewport.y + viewport.h / 2 - from.H / 2) * s;
+	const w = viewport.w * s;
+	const h = (w * to.H) / to.W;
+	return clampViewport({ x: cx - w / 2, y: cy - h / 2, w, h }, to);
+}

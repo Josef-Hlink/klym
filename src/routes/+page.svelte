@@ -47,12 +47,12 @@
 
 	$effect(() => {
 		if (openMenuId === null) return;
-		const handler = (e: MouseEvent) => {
+		const handler = (e: PointerEvent) => {
 			const t = e.target as HTMLElement | null;
 			if (!t?.closest('[data-row-menu]')) openMenuId = null;
 		};
-		document.addEventListener('mousedown', handler);
-		return () => document.removeEventListener('mousedown', handler);
+		document.addEventListener('pointerdown', handler);
+		return () => document.removeEventListener('pointerdown', handler);
 	});
 
 	$effect(() => {
@@ -135,9 +135,9 @@
 	<title>klym</title>
 </svelte:head>
 
-<main class="mx-auto max-w-3xl px-6 py-12">
-	<header class="mb-10">
-		<h1><KlymWordmark class="h-14 w-auto" /></h1>
+<main class="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-12">
+	<header class="mb-8 sm:mb-10">
+		<h1><KlymWordmark class="h-12 w-auto sm:h-14" /></h1>
 		<p class="mt-3 text-sm text-neutral-600">
 			Upload a GPX, pick two points, get a climbfinder-style profile image.
 		</p>
@@ -171,9 +171,9 @@
 					autocomplete="off"
 					placeholder="e.g. Allemond to Alpe d'Huez"
 					value={form && form.scope === 'upload' && 'name' in form ? (form.name ?? '') : ''}
-					class="mt-1 block w-full rounded-md border border-neutral-300 px-3 py-2 text-sm focus:border-neutral-900 focus:outline-none"
+					class="mt-1 block w-full rounded-md border border-neutral-300 px-3 py-2 text-base focus:border-neutral-900 focus:outline-none sm:text-sm"
 				/>
-				<p class="mt-1 text-xs text-neutral-500">
+				<p class="mt-1 break-words text-xs text-neutral-500">
 					Slugified into the route id (e.g. <code>allemond-to-alpe-d-huez</code>). Leave blank to use the file name.
 				</p>
 			</div>
@@ -194,7 +194,7 @@
 							: 'border-neutral-300 bg-neutral-50 hover:border-neutral-400 hover:bg-white'}"
 				>
 					{#if selectedFile}
-						<div class="flex items-center gap-3">
+						<div class="flex min-w-0 items-center gap-3">
 							<svg
 								xmlns="http://www.w3.org/2000/svg"
 								viewBox="0 0 24 24"
@@ -206,8 +206,8 @@
 								<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
 								<path d="M14 2v6h6" />
 							</svg>
-							<div class="text-left">
-								<div class="text-sm font-medium text-neutral-900">
+							<div class="min-w-0 text-left">
+								<div class="text-sm font-medium break-all text-neutral-900">
 									{selectedFile.name}
 								</div>
 								<div class="text-xs text-neutral-500">
@@ -238,9 +238,12 @@
 							<polyline points="17 8 12 3 7 8" />
 							<line x1="12" y1="3" x2="12" y2="15" />
 						</svg>
-						<div class="text-sm text-neutral-700">
+						<div class="text-sm text-neutral-700 pointer-coarse:hidden">
 							<span class="font-medium text-neutral-900">Drop a GPX file here</span>
 							or click to browse
+						</div>
+						<div class="hidden text-sm font-medium text-neutral-900 pointer-coarse:block">
+							Tap to choose a GPX file
 						</div>
 						<div class="text-xs text-neutral-500">.gpx · up to 15 MB</div>
 					{/if}
@@ -308,10 +311,10 @@
 										}
 									};
 								}}
-								class="flex flex-1 items-center gap-3 px-5 py-3"
+								class="flex min-w-0 flex-1 flex-wrap items-center gap-3 px-4 py-3 sm:flex-nowrap sm:px-5"
 							>
 								<input type="hidden" name="id" value={route.id} />
-								<div class="flex-1">
+								<div class="min-w-0 basis-full sm:flex-1 sm:basis-auto">
 									<!-- svelte-ignore a11y_autofocus -->
 									<input
 										name="name"
@@ -320,17 +323,17 @@
 										bind:value={editingName}
 										autofocus
 										required
-										class="block w-full rounded-md border border-neutral-300 px-2 py-1 text-sm font-medium focus:border-neutral-900 focus:outline-none"
+										class="block w-full rounded-md border border-neutral-300 px-2 py-1 text-base font-medium focus:border-neutral-900 focus:outline-none sm:text-sm"
 									/>
 									<div class="mt-1 text-xs text-neutral-500">
 										<code>{route.id}</code> · {route.pointCount} pts · added {fmtDate(route.createdAt)}
 									</div>
 								</div>
-								<div class="text-right text-sm text-neutral-600">
+								<div class="hidden text-right text-sm whitespace-nowrap text-neutral-600 sm:block">
 									<div>{fmtKm(route.totalDistM, 1)}</div>
 									<div class="text-xs text-neutral-500">+{fmtM(route.totalAscentM)}</div>
 								</div>
-								<div class="flex items-center gap-1">
+								<div class="ml-auto flex items-center gap-1">
 									<button
 										type="submit"
 										class="rounded-md bg-neutral-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-neutral-700"
@@ -345,20 +348,20 @@
 						{:else}
 							<a
 								href="/routes/{route.id}"
-								class="flex flex-1 items-center justify-between gap-4 px-5 py-4"
+								class="flex min-w-0 flex-1 items-center justify-between gap-4 py-4 pl-4 sm:px-5"
 							>
-								<div>
-									<div class="font-medium">{route.name}</div>
-									<div class="text-xs text-neutral-500">
+								<div class="min-w-0">
+									<div class="font-medium break-words">{route.name}</div>
+									<div class="break-all text-xs text-neutral-500">
 										<code>{route.id}</code> · {route.pointCount} pts · added {fmtDate(route.createdAt)}
 									</div>
 								</div>
-								<div class="text-right text-sm text-neutral-600">
+								<div class="shrink-0 text-right text-sm whitespace-nowrap text-neutral-600">
 									<div>{fmtKm(route.totalDistM, 1)}</div>
 									<div class="text-xs text-neutral-500">+{fmtM(route.totalAscentM)}</div>
 								</div>
 							</a>
-							<div data-row-menu class="relative flex items-center pr-3">
+							<div data-row-menu class="relative flex shrink-0 items-center pr-2 sm:pr-3">
 								{#if confirmingId === route.id}
 									<form
 										method="POST"
@@ -422,13 +425,13 @@
 												type="button"
 												role="menuitem"
 												onclick={() => startRename(route.id, route.name)}
-												class="block w-full px-3 py-2 text-left text-xs text-neutral-700 hover:bg-neutral-50"
+												class="block w-full px-3 py-2.5 text-left text-xs sm:py-2 text-neutral-700 hover:bg-neutral-50"
 											>Rename</button>
 											<button
 												type="button"
 												role="menuitem"
 												onclick={() => startConfirmDelete(route.id)}
-												class="block w-full px-3 py-2 text-left text-xs text-red-600 hover:bg-red-50"
+												class="block w-full px-3 py-2.5 text-left text-xs sm:py-2 text-red-600 hover:bg-red-50"
 											>Delete</button>
 										</div>
 									{/if}
@@ -473,9 +476,9 @@
 							<li class="flex items-center hover:bg-neutral-50">
 								<a
 									href="/routes/{stage.id}"
-									class="flex flex-1 items-center justify-between gap-4 px-5 py-3.5"
+									class="flex min-w-0 flex-1 items-center justify-between gap-4 px-4 py-3.5 sm:px-5"
 								>
-									<div>
+									<div class="min-w-0">
 										<div class="flex items-center gap-2 font-medium">
 											Stage {stage.stage}
 											{#if stage.id === data.todayStageId}
@@ -488,7 +491,7 @@
 											{fmtStageDate(stage.date)} · {stage.start} → {stage.finish}
 										</div>
 									</div>
-									<div class="text-right text-sm text-neutral-600">
+									<div class="shrink-0 text-right text-sm whitespace-nowrap text-neutral-600">
 										<div>{fmtKm(stage.totalDistM, 1)}</div>
 										<div class="text-xs text-neutral-500">+{fmtM(stage.totalAscentM)}</div>
 									</div>
@@ -502,7 +505,7 @@
 	{/each}
 </main>
 
-<footer class="mx-auto max-w-3xl px-6 pb-10 text-center text-[11px] text-neutral-400">
+<footer class="mx-auto max-w-3xl px-4 pb-10 sm:px-6 text-center text-[11px] text-neutral-400">
 	{#if __APP_COMMIT__ !== 'dev'}
 		<a
 			href="https://github.com/Josef-Hlink/klym/commit/{__APP_COMMIT__}"

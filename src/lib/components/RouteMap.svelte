@@ -4,6 +4,7 @@
 	import 'maplibre-gl/dist/maplibre-gl.css';
 	import { findPointAtDistance } from '$lib/elevation.js';
 	import { loadBasemap } from '$lib/basemap.js';
+	import { coarsePointer } from '$lib/scrub.js';
 	import type { RouteBounds, RoutePoint } from '$lib/types.js';
 
 	type Props = {
@@ -143,6 +144,9 @@
 	// Hovers and pin-drop clicks anywhere on the map snap to the track as long
 	// as the nearest track point is within this many screen pixels.
 	const SNAP_PX = 30;
+	// A fingertip lands less precisely than a cursor.
+	const SNAP_PX_TOUCH = 44;
+	let snapPx = SNAP_PX;
 
 	// Nearest track point to a mouse event, or null when it's further than
 	// SNAP_PX on screen. Shared by the hover and click handlers.
@@ -153,7 +157,7 @@
 		const proj = map.project([p.lon, p.lat]);
 		const dx = proj.x - e.point.x;
 		const dy = proj.y - e.point.y;
-		return dx * dx + dy * dy <= SNAP_PX * SNAP_PX ? distM : null;
+		return dx * dx + dy * dy <= snapPx * snapPx ? distM : null;
 	}
 
 	function cropCoords(startM: number, endM: number): [number, number][] {
@@ -182,10 +186,16 @@
 
 	onMount(() => {
 		if (!container) return;
+		const touch = coarsePointer();
+		if (touch) snapPx = SNAP_PX_TOUCH;
 
 		map = new maplibregl.Map({
 			container,
 			style: OSM_STYLE,
+			// On a phone the map is most of the screen's width: one finger
+			// scrolls the page past it, two fingers move the map (MapLibre shows
+			// the hint). A mouse keeps plain drag and wheel zoom.
+			cooperativeGestures: touch,
 			bounds: [
 				[bounds.minLon, bounds.minLat],
 				[bounds.maxLon, bounds.maxLat]
@@ -364,13 +374,16 @@
 </script>
 
 <div class="relative">
-	<div bind:this={container} class="h-[480px] w-full overflow-hidden rounded-lg border border-neutral-200"></div>
+	<div
+		bind:this={container}
+		class="h-[min(360px,55svh)] w-full overflow-hidden rounded-lg border border-neutral-200 sm:h-[480px]"
+	></div>
 	<div class="absolute top-2 right-2 z-10 flex items-center gap-0.5 rounded-md bg-white/90 px-1 py-0.5 shadow-sm">
 		{#each BASEMAPS as { id, label } (id)}
 			<button
 				type="button"
 				onclick={() => setBasemap(id)}
-				class="rounded px-2 py-1 text-xs font-medium hover:bg-neutral-100 {basemap === id
+				class="rounded px-2 py-1 text-xs font-medium hover:bg-neutral-100 pointer-coarse:py-1.5 {basemap === id
 					? 'text-neutral-800'
 					: 'text-neutral-400'}"
 				aria-pressed={basemap === id}
@@ -383,7 +396,7 @@
 		<button
 			type="button"
 			onclick={toggleTerrain}
-			class="flex h-6 w-7 items-center justify-center rounded hover:bg-neutral-100 {terrainOn
+			class="flex h-6 w-7 items-center justify-center rounded hover:bg-neutral-100 pointer-coarse:h-8 pointer-coarse:w-9 {terrainOn
 				? 'text-neutral-800'
 				: 'text-neutral-400'}"
 			aria-pressed={terrainOn}
