@@ -1,5 +1,14 @@
 @import 'tailwindcss';
 
+/* The hlink ribbon (HlinkRibbon.svelte) in klym's colours: the Upload
+   button's near-black, the mark in two steps of the climb gradient. */
+:root {
+	--hlink-ribbon-bg: var(--color-neutral-900);
+	--hlink-ribbon-h: #f97316;
+	--hlink-ribbon-j: #eab308;
+	--hlink-ribbon-text: var(--color-neutral-400);
+}
+
 /* Reserve scrollbar gutter so panels appearing/disappearing don't reflow
    the page horizontally as the scrollbar comes and goes. */
 html {
