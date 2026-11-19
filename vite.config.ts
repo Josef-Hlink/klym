@@ -48,6 +48,9 @@ export default defineConfig(({ mode }) => {
 			port: 1047,
 			strictPort: true,
 			allowedHosts: env.KLYM_WEB_ALLOWED_HOSTS?.split(','),
+			// nix-direnv keeps symlinks to the flake inputs (all of nixpkgs) in
+			// .direnv; followed, they cost ~90k watches and wedge the server.
+			watch: { ignored: ['**/.direnv/**'] },
 			hmr: hmrClientPort ? { clientPort: hmrClientPort } : undefined
 		}
 	};
